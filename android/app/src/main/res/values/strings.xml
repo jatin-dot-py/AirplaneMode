@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">AirplaneMode</string>
+    <string name="playback_channel_name">Media playback</string>
+    <string name="download_channel_name">Offline media downloads</string>
+    <string name="enter_picture_in_picture">Enter picture in picture</string>
+</resources>
