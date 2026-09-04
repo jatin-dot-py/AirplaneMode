@@ -10,6 +10,11 @@
   Save music, videos, and a personal Reel queue before takeoff, then enjoy them in one calm, offline-first Android app.
 </p>
 
+<p align="center">
+  <a href="https://github.com/jatin-dot-py/AirplaneMode/releases/download/v1.0.0/AirplaneMode-1.0.0.apk"><strong>Download AirplaneMode 1.0.0 for Android</strong></a><br />
+  <sub>Android 7.0+ · 50.1 MiB</sub>
+</p>
+
 > [!IMPORTANT]
 > AirplaneMode is an independent project and is not affiliated with, endorsed by, or sponsored by Instagram, Meta, Google, or YouTube. Only download content you are entitled to access and retain, and follow the applicable services' terms.
 
@@ -54,7 +59,7 @@ Android is the production target. The iOS scaffold does not yet provide feature 
 
 ## Download
 
-The project publishes one Android APK. Download `AirplaneMode-1.0.0.apk` from the repository's Releases page, allow installation from your browser or Files app when Android asks, and open AirplaneMode.
+Download [AirplaneMode-1.0.0.apk](https://github.com/jatin-dot-py/AirplaneMode/releases/download/v1.0.0/AirplaneMode-1.0.0.apk), allow installation from your browser or Files app when Android asks, and open AirplaneMode.
 
 ## Build it yourself
 
