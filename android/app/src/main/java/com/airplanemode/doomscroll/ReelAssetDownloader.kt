@@ -205,7 +205,7 @@ class ReelAssetDownloader(
     onBytes: (Long, Long) -> Unit,
   ) {
     if (!urlValidator(url)) {
-      throw PermanentDownloadException("blocked_url", "The media URL is outside Meta’s CDN.")
+      throw PermanentDownloadException("blocked_url", "The media URL is not a valid HTTPS address.")
     }
     target.parentFile?.mkdirs()
     val temporary = File(target.parentFile, "${target.name}.part")
@@ -218,7 +218,7 @@ class ReelAssetDownloader(
         if (!urlValidator(requestUrl)) {
           throw PermanentDownloadException(
             "blocked_redirect",
-            "The media download redirected outside Meta’s CDN.",
+            "The media download redirected to an invalid address.",
           )
         }
         val request = Request.Builder()
@@ -239,7 +239,7 @@ class ReelAssetDownloader(
           if (nextUrl == null || !urlValidator(nextUrl)) {
             throw PermanentDownloadException(
               "blocked_redirect",
-              "The media download redirected outside Meta’s CDN.",
+              "The media download redirected to an invalid address.",
             )
           }
           if (redirectCount >= MAX_REDIRECTS) {

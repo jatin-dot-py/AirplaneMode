@@ -1,5 +1,5 @@
 import React from 'react';
-import {StatusBar, StyleSheet, View} from 'react-native';
+import { StatusBar, StyleSheet, View } from 'react-native';
 import {
   createBottomTabNavigator,
   type BottomTabScreenProps,
@@ -16,7 +16,7 @@ import {
   Settings as SettingsIcon,
   type LucideIcon,
 } from 'lucide-react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import DoomscrollerModule, {
   InstagramCaptureSurface,
@@ -24,13 +24,10 @@ import DoomscrollerModule, {
 import OfflineReelsSurface from '../modules/doomscroller/OfflineReelsSurface';
 import MediaPlayerModule from '../modules/media-player/MediaPlayerModule';
 import AppSettingsModule from '../modules/settings/AppSettingsModule';
-import {colors, typography} from '../theme';
-import type {
-  MainTabParamList,
-  RootStackParamList,
-} from './types';
+import { colors, typography } from '../theme';
+import type { MainTabParamList, RootStackParamList } from './types';
 
-const INSTAGRAM_HOME_URL = 'https://www.instagram.com/';
+const INSTAGRAM_REELS_URL = 'https://www.instagram.com/reels/';
 const RootStack = createNativeStackNavigator<RootStackParamList>();
 const MainTabs = createBottomTabNavigator<MainTabParamList>();
 
@@ -48,7 +45,8 @@ function AppNavigator() {
         animation: 'slide_from_right',
         contentStyle: styles.rootScene,
         headerShown: false,
-      }}>
+      }}
+    >
       <RootStack.Screen component={MainTabNavigator} name="MainTabs" />
       <RootStack.Screen
         component={InstagramCaptureScreen}
@@ -57,7 +55,7 @@ function AppNavigator() {
       <RootStack.Screen
         component={OfflineReelsScreen}
         name="OfflineReels"
-        options={{animation: 'fade'}}
+        options={{ animation: 'fade' }}
       />
     </RootStack.Navigator>
   );
@@ -68,7 +66,8 @@ function MainTabNavigator() {
     <MainTabs.Navigator
       backBehavior="initialRoute"
       initialRouteName="Media"
-      screenOptions={({route}) => tabOptions(route.name)}>
+      screenOptions={({ route }) => tabOptions(route.name)}
+    >
       <MainTabs.Screen component={MediaPlayerModule} name="Media" />
       <MainTabs.Screen component={ReelSnapshotsScreen} name="Reels" />
       <MainTabs.Screen component={SettingsScreen} name="Settings" />
@@ -79,13 +78,12 @@ function MainTabNavigator() {
 function ReelSnapshotsScreen({
   navigation,
 }: BottomTabScreenProps<MainTabParamList, 'Reels'>) {
-  const rootNavigation = navigation.getParent<
-    NativeStackNavigationProp<RootStackParamList>
-  >();
+  const rootNavigation =
+    navigation.getParent<NativeStackNavigationProp<RootStackParamList>>();
   const openRoot = (
     target: 'InstagramCapture' | 'OfflineReels',
     snapshotId: string,
-  ) => rootNavigation?.navigate(target, {snapshotId});
+  ) => rootNavigation?.navigate(target, { snapshotId });
 
   return (
     <SafeAreaView edges={['top']} style={styles.safeModule}>
@@ -109,13 +107,15 @@ function InstagramCaptureScreen({
   navigation,
   route,
 }: NativeStackScreenProps<RootStackParamList, 'InstagramCapture'>) {
-  const {snapshotId} = route.params;
+  const { snapshotId } = route.params;
   return (
     <SafeAreaView edges={['top', 'bottom']} style={styles.safeModule}>
       <InstagramCaptureSurface
-        homeUrl={INSTAGRAM_HOME_URL}
+        initialUrl={INSTAGRAM_REELS_URL}
         onBack={() => navigation.goBack()}
-        onOpenSnapshot={() => navigation.replace('OfflineReels', {snapshotId})}
+        onOpenSnapshot={() =>
+          navigation.replace('OfflineReels', { snapshotId })
+        }
         snapshotId={snapshotId}
       />
     </SafeAreaView>
@@ -144,7 +144,7 @@ function tabOptions(name: keyof MainTabParamList): BottomTabNavigationOptions {
     sceneStyle: styles.tabScene,
     tabBarActiveTintColor: colors.text,
     tabBarHideOnKeyboard: true,
-    tabBarIcon: ({color, size}) => (
+    tabBarIcon: ({ color, size }) => (
       <Icon color={color} size={Math.min(size, 22)} strokeWidth={1.8} />
     ),
     tabBarInactiveTintColor: colors.textSubtle,
@@ -155,22 +155,22 @@ function tabOptions(name: keyof MainTabParamList): BottomTabNavigationOptions {
 }
 
 const styles = StyleSheet.create({
-  fullscreen: {backgroundColor: colors.black, flex: 1},
-  rootScene: {backgroundColor: colors.canvas},
-  safeModule: {backgroundColor: colors.canvas, flex: 1},
+  fullscreen: { backgroundColor: colors.black, flex: 1 },
+  rootScene: { backgroundColor: colors.canvas },
+  safeModule: { backgroundColor: colors.canvas, flex: 1 },
   tabBar: {
     backgroundColor: colors.surface,
     borderTopColor: colors.border,
     borderTopWidth: StyleSheet.hairlineWidth,
     elevation: 0,
   },
-  tabItem: {paddingVertical: 2},
+  tabItem: { paddingVertical: 2 },
   tabLabel: {
     fontSize: typography.utility,
     fontWeight: '600',
     letterSpacing: 0.1,
   },
-  tabScene: {backgroundColor: colors.canvas},
+  tabScene: { backgroundColor: colors.canvas },
 });
 
 export default AppNavigator;

@@ -734,6 +734,12 @@ class MediaEngineModule(
   }
 
   @ReactMethod
+  fun pausePlayback(promise: Promise) = withController(promise) { controller ->
+    controller.pause()
+    true
+  }
+
+  @ReactMethod
   fun togglePlayback(promise: Promise) = withController(promise) { controller ->
     if (controller.isPlaying) controller.pause() else {
       if (controller.playbackState == Player.STATE_IDLE) controller.prepare()
@@ -1175,6 +1181,12 @@ class MediaEngineModule(
   }
 
   private fun resumePendingYtDlpJobs() {
+    val preferences = reactContext.getSharedPreferences(
+      DOWNLOAD_QUEUE_PREFERENCES,
+      Context.MODE_PRIVATE,
+    )
+    val replaceConstrainedJobs =
+      preferences.getInt(KEY_DOWNLOAD_QUEUE_POLICY_VERSION, 0) < DOWNLOAD_QUEUE_POLICY_VERSION
     repository.pendingYtDlpJobs().forEach { job ->
       val item = repository.byId(job.mediaItemId) ?: return@forEach
       if (item.source !in setOf("youtube", "youtube-music")) return@forEach
@@ -1182,9 +1194,16 @@ class MediaEngineModule(
       if (job.sourceUrl == null || job.status == "waiting_for_resolver") {
         repository.putYtDlpJob(item.id, sourceUrl)
       }
-      val workId = YtDlpQueue.enqueue(reactContext, item.id)
+      val workId = YtDlpQueue.enqueue(
+        reactContext,
+        item.id,
+        replace = replaceConstrainedJobs,
+      )
       repository.setWorkId(item.id, workId.toString())
     }
+    preferences.edit()
+      .putInt(KEY_DOWNLOAD_QUEUE_POLICY_VERSION, DOWNLOAD_QUEUE_POLICY_VERSION)
+      .apply()
   }
 
   private fun hasUsableOwnedMedia(item: MediaItemEntity): Boolean {
@@ -1429,6 +1448,9 @@ class MediaEngineModule(
     const val DOWNLOAD_EVENT = "DownloadStateChanged"
     const val VIDEO_PLAYER_CLOSED_EVENT = "VideoPlayerClosed"
     private const val UI_PREFERENCES = "airplanemode-ui"
+    private const val DOWNLOAD_QUEUE_PREFERENCES = "airplanemode-media-engine"
+    private const val KEY_DOWNLOAD_QUEUE_POLICY_VERSION = "download_queue_policy_version"
+    private const val DOWNLOAD_QUEUE_POLICY_VERSION = 2
     private const val MEDIA_DATABASE_NAME = "airplane-mode-media.db"
     private const val GALLERY_REQUEST_CODE = 7013
     private const val MAX_ARTWORK_BYTES = 12L * 1024L * 1024L

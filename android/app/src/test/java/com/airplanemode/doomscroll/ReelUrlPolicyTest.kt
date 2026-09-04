@@ -9,13 +9,13 @@ import org.junit.Test
 
 class ReelUrlPolicyTest {
   @Test
-  fun acceptsOnlyHttpsMetaCdnHosts() {
+  fun acceptsAnyAbsoluteHttpsUrl() {
     assertTrue(ReelUrlPolicy.isAllowedHttpsUrl("https://scontent.cdninstagram.com/video.mp4"))
     assertTrue(ReelUrlPolicy.isAllowedHttpsUrl("https://video.xx.fbcdn.net/video.mp4"))
+    assertTrue(ReelUrlPolicy.isAllowedHttpsUrl("https://media.example.test/video.mp4"))
     assertFalse(ReelUrlPolicy.isAllowedHttpsUrl("http://scontent.cdninstagram.com/video.mp4"))
-    assertFalse(ReelUrlPolicy.isAllowedHttpsUrl("https://cdninstagram.com.example.test/video.mp4"))
-    assertFalse(ReelUrlPolicy.isAllowedHttpsUrl("https://example.test/cdninstagram.com/video.mp4"))
     assertFalse(ReelUrlPolicy.isAllowedHttpsUrl("file:///data/user/0/app/video.mp4"))
+    assertFalse(ReelUrlPolicy.isAllowedHttpsUrl("not a URL"))
   }
 
   @Test
@@ -30,15 +30,15 @@ class ReelUrlPolicyTest {
       width = 720,
       height = 1280,
     )
-    val blocked = RemoteMediaCandidate(
-      url = "https://example.test/blocked.mp4",
+    val external = RemoteMediaCandidate(
+      url = "https://media.example.test/external.mp4",
       width = 2160,
       height = 3840,
     )
 
     assertEquals(
-      listOf(large, small),
-      ReelUrlPolicy.ordered(listOf(small, blocked, large, large)),
+      listOf(external, large, small),
+      ReelUrlPolicy.ordered(listOf(small, external, large, large)),
     )
   }
 

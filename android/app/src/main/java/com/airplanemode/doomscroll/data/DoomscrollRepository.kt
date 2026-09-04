@@ -398,6 +398,45 @@ class DoomscrollRepository private constructor(context: Context) {
     return true
   }
 
+  fun refreshDownloadQueuePolicy(): Int {
+    val preferences = appContext.getSharedPreferences(
+      DOWNLOAD_QUEUE_PREFERENCES,
+      Context.MODE_PRIVATE,
+    )
+    if (
+      preferences.getInt(KEY_DOWNLOAD_QUEUE_POLICY_VERSION, 0) >=
+      DOWNLOAD_QUEUE_POLICY_VERSION
+    ) {
+      return 0
+    }
+
+    val recoverableStates = setOf("queued", "downloading")
+    val recoverableErrors = setOf("network", "blocked_url", "blocked_redirect")
+    val downloads = dao.allDownloads().filter { download ->
+      hasSnapshotReferences(download.mediaPk) &&
+        download.videoCandidatesJson != "[]" &&
+        (download.state in recoverableStates ||
+          (download.state == "failed" && download.errorCode in recoverableErrors))
+    }
+
+    downloads.forEach { download ->
+      dao.putDownload(
+        download.copy(
+          state = "queued",
+          progress = 0.0,
+          errorCode = null,
+          errorDetail = null,
+          updatedAt = System.currentTimeMillis(),
+        ),
+      )
+      queueDownload(download.mediaPk, replace = true)
+    }
+    preferences.edit()
+      .putInt(KEY_DOWNLOAD_QUEUE_POLICY_VERSION, DOWNLOAD_QUEUE_POLICY_VERSION)
+      .apply()
+    return downloads.size
+  }
+
   fun deleteSnapshot(snapshotId: String): SnapshotDeleteResult {
     if (dao.sessionById(snapshotId) == null) return SnapshotDeleteResult(false, 0L)
     val mediaPks = dao.snapshotMediaPks(snapshotId)
@@ -514,6 +553,9 @@ class DoomscrollRepository private constructor(context: Context) {
     private const val MAX_NAME_LENGTH = 120
     private const val MAX_REASON_LENGTH = 300
     private const val CANCEL_WAIT_SECONDS = 10L
+    private const val DOWNLOAD_QUEUE_PREFERENCES = "doomscroll_engine"
+    private const val KEY_DOWNLOAD_QUEUE_POLICY_VERSION = "download_queue_policy_version"
+    private const val DOWNLOAD_QUEUE_POLICY_VERSION = 2
     private val QUALITY_POLICIES = setOf(
       "smart_hq",
       "efficient_hq",

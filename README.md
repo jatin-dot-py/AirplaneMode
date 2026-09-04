@@ -11,8 +11,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jatin-dot-py/AirplaneMode/releases/download/v1.0.0/AirplaneMode-1.0.0.apk"><strong>Download AirplaneMode 1.0.0 for Android</strong></a><br />
-  <sub>Android 7.0+ · 50.1 MiB</sub>
+  <a href="https://github.com/jatin-dot-py/AirplaneMode/releases/download/v1.0.1/AirplaneMode-1.0.1.apk"><strong>Download AirplaneMode 1.0.1 for Android</strong></a><br />
+  <sub>Android 7.0+ · 50.0 MiB</sub>
 </p>
 
 > [!IMPORTANT]
@@ -59,7 +59,7 @@ Android is the production target. The iOS scaffold does not yet provide feature 
 
 ## Download
 
-Download [AirplaneMode-1.0.0.apk](https://github.com/jatin-dot-py/AirplaneMode/releases/download/v1.0.0/AirplaneMode-1.0.0.apk), allow installation from your browser or Files app when Android asks, and open AirplaneMode.
+Download [AirplaneMode-1.0.1.apk](https://github.com/jatin-dot-py/AirplaneMode/releases/download/v1.0.1/AirplaneMode-1.0.1.apk), allow installation from your browser or Files app when Android asks, and open AirplaneMode.
 
 ## Build it yourself
 

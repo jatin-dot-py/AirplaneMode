@@ -1,7 +1,4 @@
-import {
-  settledReelIndex,
-  settledReelPage,
-} from '../src/modules/doomscroller/paging';
+import { settledReelIndex } from '../src/modules/doomscroller/paging';
 
 describe('settledReelIndex', () => {
   test('selects one stable page only after the scroll offset settles', () => {
@@ -18,27 +15,15 @@ describe('settledReelIndex', () => {
     expect(settledReelIndex(800, 0, 1_000)).toBe(0);
   });
 
-  test('returns the exact offset needed to repair a split page', () => {
-    expect(settledReelPage(1_245, 800, 1_000)).toEqual({
-      exactOffset: 1_600,
-      index: 2,
-      needsCorrection: true,
-    });
-    expect(settledReelPage(1_600.25, 800, 1_000)).toEqual({
-      exactOffset: 1_600,
-      index: 2,
-      needsCorrection: false,
-    });
+  test('rounds a native settled offset without issuing a second scroll', () => {
+    expect(settledReelIndex(1_245, 800, 1_000)).toBe(2);
+    expect(settledReelIndex(1_600.25, 800, 1_000)).toBe(2);
   });
 
-  test('realigns the active Reel when the measured viewport changes', () => {
-    const oldViewport = settledReelPage(800 * 537, 800, 1_000);
-    const resizedViewport = settledReelPage(921 * oldViewport.index, 921, 1_000);
+  test('keeps the active index stable when the measured viewport changes', () => {
+    const oldIndex = settledReelIndex(800 * 537, 800, 1_000);
+    const resizedIndex = settledReelIndex(921 * oldIndex, 921, 1_000);
 
-    expect(resizedViewport).toEqual({
-      exactOffset: 494_577,
-      index: 537,
-      needsCorrection: false,
-    });
+    expect(resizedIndex).toBe(537);
   });
 });

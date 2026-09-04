@@ -8,9 +8,9 @@ import {
 } from 'react-native';
 
 export type PlaybackLocator =
-  | {kind: 'content-uri'; uri: string}
-  | {kind: 'media3-download'; downloadId: string}
-  | {kind: 'app-file'; path: string}
+  | { kind: 'content-uri'; uri: string }
+  | { kind: 'media3-download'; downloadId: string }
+  | { kind: 'app-file'; path: string }
   | null;
 
 export type MediaAvailability =
@@ -22,11 +22,7 @@ export type MediaAvailability =
   | 'missing'
   | 'cancelled';
 
-export type MediaSourceId =
-  | 'youtube-music'
-  | 'spotify'
-  | 'gallery'
-  | 'youtube';
+export type MediaSourceId = 'youtube-music' | 'spotify' | 'gallery' | 'youtube';
 
 export type MediaItem = {
   id: string;
@@ -135,8 +131,14 @@ type NativeMediaEngine = {
   removeLibraryItems(mediaItemIds: string[]): Promise<number>;
   listLocalPlaylists(): Promise<LocalPlaylist[]>;
   createLocalPlaylist(name: string, mediaItemIds: string[]): Promise<string>;
-  addItemsToLocalPlaylist(playlistId: string, mediaItemIds: string[]): Promise<boolean>;
-  removeItemsFromLocalPlaylist(playlistId: string, mediaItemIds: string[]): Promise<boolean>;
+  addItemsToLocalPlaylist(
+    playlistId: string,
+    mediaItemIds: string[],
+  ): Promise<boolean>;
+  removeItemsFromLocalPlaylist(
+    playlistId: string,
+    mediaItemIds: string[],
+  ): Promise<boolean>;
   setLocalPlaylistPinned(playlistId: string, pinned: boolean): Promise<boolean>;
   deleteLocalPlaylist(playlistId: string): Promise<boolean>;
   getStorageStats(): Promise<StorageStats>;
@@ -147,6 +149,7 @@ type NativeMediaEngine = {
     mimeType: string | null,
   ): Promise<string>;
   playMedia(id: string, playlistId: string | null): Promise<boolean>;
+  pausePlayback(): Promise<boolean>;
   togglePlayback(): Promise<boolean>;
   seekTo(positionMs: number): Promise<boolean>;
   setPlaybackSpeed(speed: number): Promise<number>;
@@ -154,7 +157,11 @@ type NativeMediaEngine = {
   skipPrevious(): Promise<boolean>;
   getPlaybackState(): Promise<PlaybackState>;
   enterPictureInPicture(width: number, height: number): Promise<boolean>;
-  setVideoFullscreen(enabled: boolean, width: number, height: number): Promise<boolean>;
+  setVideoFullscreen(
+    enabled: boolean,
+    width: number,
+    height: number,
+  ): Promise<boolean>;
   getUiPreference(key: string): Promise<string | null>;
   setUiPreference(key: string, value: string): Promise<boolean>;
   addListener(eventName: string): void;
@@ -162,7 +169,9 @@ type NativeMediaEngine = {
 };
 
 const nativeEngine = NativeModules.MediaEngine as NativeMediaEngine | undefined;
-const emitter = nativeEngine ? new NativeEventEmitter(NativeModules.MediaEngine) : null;
+const emitter = nativeEngine
+  ? new NativeEventEmitter(NativeModules.MediaEngine)
+  : null;
 
 export const emptyPlayback: PlaybackState = {
   mediaId: null,
@@ -182,7 +191,8 @@ export const emptyPlayback: PlaybackState = {
 };
 
 function requireEngine(): NativeMediaEngine {
-  if (!nativeEngine) throw new Error('MediaEngine is unavailable on this platform.');
+  if (!nativeEngine)
+    throw new Error('MediaEngine is unavailable on this platform.');
   return nativeEngine;
 }
 
@@ -216,12 +226,18 @@ export const removeLibraryItem = (mediaItemId: string) =>
 export const removeLibraryItems = (mediaItemIds: string[]) =>
   requireEngine().removeLibraryItems(mediaItemIds);
 export const listLocalPlaylists = () => requireEngine().listLocalPlaylists();
-export const createLocalPlaylist = (name: string, mediaItemIds: string[] = []) =>
-  requireEngine().createLocalPlaylist(name, mediaItemIds);
-export const addItemsToLocalPlaylist = (playlistId: string, mediaItemIds: string[]) =>
-  requireEngine().addItemsToLocalPlaylist(playlistId, mediaItemIds);
-export const removeItemsFromLocalPlaylist = (playlistId: string, mediaItemIds: string[]) =>
-  requireEngine().removeItemsFromLocalPlaylist(playlistId, mediaItemIds);
+export const createLocalPlaylist = (
+  name: string,
+  mediaItemIds: string[] = [],
+) => requireEngine().createLocalPlaylist(name, mediaItemIds);
+export const addItemsToLocalPlaylist = (
+  playlistId: string,
+  mediaItemIds: string[],
+) => requireEngine().addItemsToLocalPlaylist(playlistId, mediaItemIds);
+export const removeItemsFromLocalPlaylist = (
+  playlistId: string,
+  mediaItemIds: string[],
+) => requireEngine().removeItemsFromLocalPlaylist(playlistId, mediaItemIds);
 export const setLocalPlaylistPinned = (playlistId: string, pinned: boolean) =>
   requireEngine().setLocalPlaylistPinned(playlistId, pinned);
 export const deleteLocalPlaylist = (playlistId: string) =>
@@ -235,8 +251,10 @@ export const enqueueResolvedDownload = (
 ) => requireEngine().enqueueResolvedDownload(itemId, authorizedUri, mimeType);
 export const playMedia = (id: string, playlistId: string | null = null) =>
   requireEngine().playMedia(id, playlistId);
+export const pausePlayback = () => requireEngine().pausePlayback();
 export const togglePlayback = () => requireEngine().togglePlayback();
-export const seekTo = (positionMs: number) => requireEngine().seekTo(positionMs);
+export const seekTo = (positionMs: number) =>
+  requireEngine().seekTo(positionMs);
 export const setPlaybackSpeed = (speed: number) =>
   requireEngine().setPlaybackSpeed(speed);
 export const skipNext = () => requireEngine().skipNext();
@@ -254,27 +272,41 @@ export async function getPlaybackState(): Promise<PlaybackState> {
   return nativeEngine ? nativeEngine.getPlaybackState() : emptyPlayback;
 }
 
-export function onLibraryChanged(listener: () => void): EmitterSubscription | null {
+export function onLibraryChanged(
+  listener: () => void,
+): EmitterSubscription | null {
   return emitter?.addListener('MediaLibraryChanged', listener) ?? null;
 }
 
 export function onPlaybackStateChanged(
   listener: (state: PlaybackState) => void,
 ): EmitterSubscription | null {
-  return emitter?.addListener('PlaybackStateChanged', (...args: readonly Object[]) => {
-    listener(args[0] as PlaybackState);
-  }) ?? null;
+  return (
+    emitter?.addListener(
+      'PlaybackStateChanged',
+      (...args: readonly Object[]) => {
+        listener(args[0] as PlaybackState);
+      },
+    ) ?? null
+  );
 }
 
 export function onDownloadStateChanged(
   listener: (state: DownloadStateChanged) => void,
 ): EmitterSubscription | null {
-  return emitter?.addListener('DownloadStateChanged', (...args: readonly Object[]) => {
-    listener(args[0] as DownloadStateChanged);
-  }) ?? null;
+  return (
+    emitter?.addListener(
+      'DownloadStateChanged',
+      (...args: readonly Object[]) => {
+        listener(args[0] as DownloadStateChanged);
+      },
+    ) ?? null
+  );
 }
 
-export function onVideoPlayerClosed(listener: () => void): EmitterSubscription | null {
+export function onVideoPlayerClosed(
+  listener: () => void,
+): EmitterSubscription | null {
   return emitter?.addListener('VideoPlayerClosed', listener) ?? null;
 }
 

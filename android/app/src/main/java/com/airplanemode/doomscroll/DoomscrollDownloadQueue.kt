@@ -2,9 +2,7 @@ package com.airplanemode.doomscroll
 
 import android.content.Context
 import androidx.work.BackoffPolicy
-import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
@@ -23,11 +21,6 @@ object DoomscrollDownloadQueue {
   ): UUID {
     val request = OneTimeWorkRequestBuilder<DoomscrollDownloadWorker>()
       .setInputData(workDataOf(INPUT_MEDIA_PK to mediaPk))
-      .setConstraints(
-        Constraints.Builder()
-          .setRequiredNetworkType(NetworkType.CONNECTED)
-          .build(),
-      )
       .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
       .addTag(TAG_QUEUE)
       .addTag(itemTag(mediaPk))

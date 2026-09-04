@@ -71,6 +71,9 @@ class DoomscrollEngineModule(
       IntentFilter(DoomscrollDownloadEvents.ACTION),
       ContextCompat.RECEIVER_NOT_EXPORTED,
     )
+    ioExecutor.execute {
+      if (repository.refreshDownloadQueuePolicy() > 0) emitChanged()
+    }
   }
 
   override fun getName(): String = NAME

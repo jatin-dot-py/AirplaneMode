@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="@android:color/transparent"
     app:keep_content_on_player_reset="false"
-    app:resize_mode="fill"
+    app:resize_mode="zoom"
     app:show_buffering="when_playing"
     app:shutter_background_color="@android:color/transparent"
     app:surface_type="texture_view"

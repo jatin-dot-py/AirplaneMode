@@ -1,13 +1,11 @@
 package com.airplanemode.doomscroll
 
 import android.graphics.Color
-import android.graphics.Matrix
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.LayoutInflater
-import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.media3.common.AudioAttributes
@@ -32,12 +30,8 @@ import com.facebook.react.uimanager.UIManagerHelper
 import com.facebook.react.uimanager.annotations.ReactProp
 import com.facebook.react.uimanager.events.Event
 import java.io.File
-import kotlin.math.max
 
-internal data class ReelContentScale(
-  val scaleX: Float,
-  val scaleY: Float,
-)
+internal fun reelResizeMode(): Int = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
 
 private class ReelPlayerEvent(
   surfaceId: Int,
@@ -51,32 +45,6 @@ private class ReelPlayerEvent(
   override fun canCoalesce(): Boolean = coalescable
 
   protected override fun getEventData(): WritableMap = payload
-}
-
-internal fun centerCropScale(
-  viewWidth: Int,
-  viewHeight: Int,
-  videoWidth: Int,
-  videoHeight: Int,
-  pixelWidthHeightRatio: Float = 1f,
-  unappliedRotationDegrees: Int = 0,
-): ReelContentScale {
-  if (viewWidth <= 0 || viewHeight <= 0 || videoWidth <= 0 || videoHeight <= 0) {
-    return ReelContentScale(1f, 1f)
-  }
-
-  val safePixelRatio = pixelWidthHeightRatio.takeIf { it.isFinite() && it > 0f } ?: 1f
-  val encodedWidth = videoWidth * safePixelRatio
-  val encodedHeight = videoHeight.toFloat()
-  val quarterTurn = Math.floorMod(unappliedRotationDegrees, 180) == 90
-  val contentWidth = if (quarterTurn) encodedHeight else encodedWidth
-  val contentHeight = if (quarterTurn) encodedWidth else encodedHeight
-  val uniformScale = max(viewWidth / contentWidth, viewHeight / contentHeight)
-
-  return ReelContentScale(
-    scaleX = contentWidth * uniformScale / viewWidth,
-    scaleY = contentHeight * uniformScale / viewHeight,
-  )
 }
 
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -140,11 +108,7 @@ class AirplaneReelPlayerView(
     useController = false
     isClickable = false
     isFocusable = false
-    // React Native lays custom native views out with exact dimensions. In that environment the
-    // AspectRatioFrameLayout can miss its second measurement after Media3 discovers the video
-    // size, leaving the TextureView stretched to both axes. Keep the frame fixed and apply the
-    // center-crop transform directly to the texture when the decoded dimensions arrive.
-    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
+    resizeMode = reelResizeMode()
     setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
     setShutterBackgroundColor(Color.TRANSPARENT)
     setKeepContentOnPlayerReset(false)
@@ -174,6 +138,7 @@ class AirplaneReelPlayerView(
   private var sourcePath: String? = null
   private var pendingSourcePath: String? = null
   private var resumePositionMs = 0L
+  private var appliedResumePositionMs = 0L
   private var paused = false
   private var muted = false
   private var playbackSpeed = 1f
@@ -182,7 +147,6 @@ class AirplaneReelPlayerView(
   private var released = false
   private var sourceGeneration = 0
   private var playbackRetryCount = 0
-  private var currentVideoSize: VideoSize? = null
   private var lastProgressTickMs = SystemClock.elapsedRealtime()
 
   init {
@@ -209,8 +173,6 @@ class AirplaneReelPlayerView(
     if (nextSource != sourcePath) {
       sourceGeneration++
       playbackRetryCount = 0
-      currentVideoSize = null
-      resetVideoTransform()
       sourcePath = nextSource
       player.stop()
       player.clearMediaItems()
@@ -226,10 +188,19 @@ class AirplaneReelPlayerView(
               .build(),
             resumePositionMs,
           )
+          appliedResumePositionMs = resumePositionMs
           player.prepare()
         }
       }
       lastProgressTickMs = SystemClock.elapsedRealtime()
+    } else if (
+      nextSource != null &&
+      player.mediaItemCount > 0 &&
+      !visibilityQualified &&
+      appliedResumePositionMs != resumePositionMs
+    ) {
+      player.seekTo(resumePositionMs)
+      appliedResumePositionMs = resumePositionMs
     }
     updatePlayState()
   }
@@ -296,25 +267,29 @@ class AirplaneReelPlayerView(
 
   override fun onVideoSizeChanged(videoSize: VideoSize) {
     if (released || videoSize == VideoSize.UNKNOWN) return
-    currentVideoSize = videoSize
-    // PlayerView also reacts to this callback. Posting guarantees our transform is the final one
-    // applied after Media3 has updated its own child hierarchy.
-    post(::applyCenterCropTransform)
+    playerView.requestLayout()
+    requestLayout()
   }
 
   override fun onRenderedFirstFrame() {
     if (released) return
     playbackRetryCount = 0
-    applyCenterCropTransform()
-    val payload = Arguments.createMap().apply {
-      putString("sourcePath", player.currentMediaItem?.mediaId.orEmpty())
+    val generation = sourceGeneration
+    val renderedSource = player.currentMediaItem?.mediaId.orEmpty()
+    playerView.requestLayout()
+    requestLayout()
+    post {
+      if (released || generation != sourceGeneration || renderedSource != sourcePath) return@post
+      val payload = Arguments.createMap().apply {
+        putString("sourcePath", renderedSource)
+      }
+      dispatchEvent("topFirstFrame", payload, coalescable = false)
     }
-    dispatchEvent("topFirstFrame", payload, coalescable = false)
   }
 
   override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
     super.onSizeChanged(width, height, oldWidth, oldHeight)
-    if (width != oldWidth || height != oldHeight) post(::applyCenterCropTransform)
+    if (width != oldWidth || height != oldHeight) playerView.requestLayout()
   }
 
   override fun onHostResume() {
@@ -340,39 +315,6 @@ class AirplaneReelPlayerView(
     playerView.player = null
     player.removeListener(this)
     player.release()
-  }
-
-  private fun applyCenterCropTransform() {
-    if (released) return
-    val textureView = playerView.videoSurfaceView as? TextureView ?: return
-    val videoSize = currentVideoSize ?: player.videoSize.takeUnless { it == VideoSize.UNKNOWN }
-      ?: return
-    if (textureView.width <= 0 || textureView.height <= 0) return
-
-    val scale = centerCropScale(
-      viewWidth = textureView.width,
-      viewHeight = textureView.height,
-      videoWidth = videoSize.width,
-      videoHeight = videoSize.height,
-      pixelWidthHeightRatio = videoSize.pixelWidthHeightRatio,
-      unappliedRotationDegrees = videoSize.unappliedRotationDegrees,
-    )
-    val matrix = Matrix().apply {
-      setScale(
-        scale.scaleX,
-        scale.scaleY,
-        textureView.width / 2f,
-        textureView.height / 2f,
-      )
-    }
-    textureView.setTransform(matrix)
-    textureView.invalidate()
-  }
-
-  private fun resetVideoTransform() {
-    val textureView = playerView.videoSurfaceView as? TextureView ?: return
-    textureView.setTransform(null)
-    textureView.invalidate()
   }
 
   private fun emitProgress() {

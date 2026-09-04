@@ -1,18 +1,25 @@
-import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
   AppState,
+  FlatList,
   Image,
   Pressable,
   StyleSheet,
   Text,
   ToastAndroid,
   View,
+  type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
-import {FlashList, type FlashListRef} from '@shopify/flash-list';
-import {useIsFocused} from '@react-navigation/native';
+import { useIsFocused } from '@react-navigation/native';
 import {
   ArrowLeft,
   BadgeCheck,
@@ -32,7 +39,7 @@ import {
   type LucideIcon,
 } from 'lucide-react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
   NativeReelPlayerView,
@@ -43,18 +50,25 @@ import {
   retryReelDownload,
   type ReelPlaybackProgress,
 } from '../../native/DoomscrollEngine';
-import {getUiPreference, setUiPreference} from '../../native/MediaEngine';
-import {colors, radii, spacing, typography} from '../../theme';
-import {settledReelPage} from './paging';
-import {canonicalReelPermalink} from './permalink';
+import {
+  getUiPreference,
+  pausePlayback as pauseMediaPlayback,
+  setUiPreference,
+} from '../../native/MediaEngine';
+import { colors, radii, spacing, typography } from '../../theme';
+import { settledReelIndex } from './paging';
+import { canonicalReelPermalink } from './permalink';
 import {
   DEFAULT_REEL_SPEED,
   DOOMSCROLL_SPEED_PREFERENCE,
   REEL_PLAYBACK_SPEEDS,
   parseReelSpeed,
 } from './preferences';
-import {reelResumePosition, resolveSnapshotContinueIndex} from './resumePolicy';
-import type {OfflineReel} from './types';
+import {
+  reelResumePosition,
+  resolveSnapshotContinueIndex,
+} from './resumePolicy';
+import type { OfflineReel } from './types';
 
 type Props = {
   onBack: () => void;
@@ -68,81 +82,86 @@ type PendingProgress = {
 };
 
 const PROGRESS_WRITE_INTERVAL_MS = 2_000;
-const DRAG_END_SETTLE_MS = 80;
-const DOWNLOAD_REFRESH_DELAY_MS = 120;
-const LAYOUT_CHANGE_TOLERANCE = 0.25;
+const DOWNLOAD_REFRESH_DELAY_MS = 250;
+const PLAYER_NEIGHBOUR_DISTANCE = 1;
+const SCROLL_VELOCITY_EPSILON = 0.01;
+const VIEWPORT_CHANGE_TOLERANCE = 1;
 
-function OfflineReelsSurface({onBack, snapshotId}: Props) {
+function OfflineReelsSurface({ onBack, snapshotId }: Props) {
   const insets = useSafeAreaInsets();
   const focused = useIsFocused();
-  const listRef = useRef<FlashListRef<OfflineReel>>(null);
+  const listRef = useRef<FlatList<OfflineReel>>(null);
   const progressChainRef = useRef<Promise<void>>(Promise.resolve());
   const initializedRef = useRef(false);
   const mountedRef = useRef(true);
   const activeIndexRef = useRef(0);
-  const settledRef = useRef(false);
   const reelsRef = useRef<OfflineReel[]>([]);
+  const reelIndexRef = useRef<Map<string, number>>(new Map());
   const appActiveRef = useRef(AppState.currentState === 'active');
+  const scrollingRef = useRef(false);
   const qualifiedIdsRef = useRef<Set<string>>(new Set());
   const resumePositionsRef = useRef<Map<string, number>>(new Map());
   const pendingProgressRef = useRef<PendingProgress | null>(null);
   const lastProgressWriteRef = useRef(0);
-  const lastOffsetRef = useRef(0);
-  const surfaceHeightRef = useRef(0);
-  const momentumRef = useRef(false);
-  const interactionGenerationRef = useRef(0);
-  const dragEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const downloadRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewportHeightRef = useRef(0);
+  const downloadRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const pendingDownloadRefreshRef = useRef(false);
-  const alignmentFrameRef = useRef<number | null>(null);
+  const viewportAlignmentFrameRef = useRef<number | null>(null);
+
   const [reels, setReels] = useState<OfflineReel[]>([]);
-  const [surfaceHeight, setSurfaceHeight] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [settled, setSettled] = useState(false);
+  const [scrolling, setScrolling] = useState(false);
   const [appActive, setAppActive] = useState(appActiveRef.current);
+  const [playbackOwnershipReady, setPlaybackOwnershipReady] = useState(false);
   const [paused, setPaused] = useState(false);
   const [muted, setMuted] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(DEFAULT_REEL_SPEED);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [expandedCaptions, setExpandedCaptions] = useState<Set<string>>(new Set());
-  const [renderedSourcePath, setRenderedSourcePath] = useState<string | null>(null);
-
-  useEffect(() => {
-    settledRef.current = settled;
-  }, [settled]);
-
-  useEffect(() => {
-    reelsRef.current = reels;
-  }, [reels]);
+  const [expandedCaptions, setExpandedCaptions] = useState<Set<string>>(
+    new Set(),
+  );
 
   const refresh = useCallback(async () => {
     try {
+      const previousReel = reelsRef.current[activeIndexRef.current];
       const [nextReels, snapshot] = await Promise.all([
         listSnapshotReels(snapshotId),
         getReelSnapshot(snapshotId),
       ]);
-      reelsRef.current = nextReels;
-      setReels(nextReels);
+      const nextIndexById = new Map(
+        nextReels.map((reel, index) => [reel.mediaPk, index]),
+      );
       qualifiedIdsRef.current = new Set(
-        nextReels.filter(reel => reel.qualifiedWatched).map(reel => reel.mediaPk),
+        nextReels
+          .filter(reel => reel.qualifiedWatched)
+          .map(reel => reel.mediaPk),
       );
       resumePositionsRef.current = new Map(
         nextReels.map(reel => [reel.mediaPk, reel.savedPlaybackPositionMs]),
       );
+      reelIndexRef.current = nextIndexById;
+      reelsRef.current = nextReels;
+      setReels(nextReels);
+
+      let nextIndex: number;
       if (!initializedRef.current) {
         initializedRef.current = true;
-        const continueIndex = resolveSnapshotContinueIndex(nextReels, snapshot);
-        activeIndexRef.current = continueIndex;
-        setActiveIndex(continueIndex);
+        nextIndex = resolveSnapshotContinueIndex(nextReels, snapshot);
       } else {
-        setActiveIndex(current => {
-          const bounded = Math.min(current, Math.max(nextReels.length - 1, 0));
-          activeIndexRef.current = bounded;
-          return bounded;
-        });
+        const preservedIndex = previousReel
+          ? nextIndexById.get(previousReel.mediaPk)
+          : undefined;
+        nextIndex =
+          preservedIndex ??
+          Math.min(activeIndexRef.current, Math.max(nextReels.length - 1, 0));
       }
+      activeIndexRef.current = nextIndex;
+      setActiveIndex(nextIndex);
       setLoadError(null);
     } catch (reason) {
       setLoadError(
@@ -155,89 +174,133 @@ function OfflineReelsSurface({onBack, snapshotId}: Props) {
     }
   }, [snapshotId]);
 
+  const scheduleDownloadRefresh = useCallback(() => {
+    pendingDownloadRefreshRef.current = true;
+    if (scrollingRef.current || downloadRefreshTimerRef.current) return;
+    downloadRefreshTimerRef.current = setTimeout(() => {
+      downloadRefreshTimerRef.current = null;
+      if (scrollingRef.current) return;
+      pendingDownloadRefreshRef.current = false;
+      refresh().catch(() => undefined);
+    }, DOWNLOAD_REFRESH_DELAY_MS);
+  }, [refresh]);
+
   useEffect(() => {
     mountedRef.current = true;
     getUiPreference(DOOMSCROLL_SPEED_PREFERENCE)
       .then(value => setPlaybackSpeed(parseReelSpeed(value)))
       .catch(() => undefined);
     refresh().catch(() => undefined);
+
     const downloadChanged = onDoomscrollDownloadChanged(event => {
-      setReels(current => current.map(reel => reel.mediaPk === event.mediaPk
-        ? {
-            ...reel,
+      const changedIndex = reelIndexRef.current.get(event.mediaPk);
+      if (
+        changedIndex !== undefined &&
+        Math.abs(changedIndex - activeIndexRef.current) <=
+          PLAYER_NEIGHBOUR_DISTANCE
+      ) {
+        setReels(current => {
+          if (current[changedIndex]?.mediaPk !== event.mediaPk) return current;
+          const next = [...current];
+          next[changedIndex] = {
+            ...next[changedIndex],
             downloadError: event.error,
             downloadProgress: event.progress,
             downloadState: event.state,
-          }
-        : reel));
-      if (event.state === 'ready') {
-        pendingDownloadRefreshRef.current = true;
-        if (settledRef.current && !momentumRef.current) {
-          if (downloadRefreshTimerRef.current) {
-            clearTimeout(downloadRefreshTimerRef.current);
-          }
-          downloadRefreshTimerRef.current = setTimeout(() => {
-            downloadRefreshTimerRef.current = null;
-            pendingDownloadRefreshRef.current = false;
-            refresh().catch(() => undefined);
-          }, DOWNLOAD_REFRESH_DELAY_MS);
-        }
+          };
+          reelsRef.current = next;
+          return next;
+        });
       }
+      if (event.state === 'ready') scheduleDownloadRefresh();
     });
     const appStateChanged = AppState.addEventListener('change', state => {
       const active = state === 'active';
       appActiveRef.current = active;
       setAppActive(active);
     });
+
     return () => {
       mountedRef.current = false;
       downloadChanged?.remove();
       appStateChanged.remove();
-      if (dragEndTimerRef.current) clearTimeout(dragEndTimerRef.current);
       if (downloadRefreshTimerRef.current) {
         clearTimeout(downloadRefreshTimerRef.current);
       }
-      if (alignmentFrameRef.current !== null) {
-        cancelAnimationFrame(alignmentFrameRef.current);
+      if (viewportAlignmentFrameRef.current !== null) {
+        cancelAnimationFrame(viewportAlignmentFrameRef.current);
       }
     };
-  }, [refresh]);
+  }, [refresh, scheduleDownloadRefresh]);
 
-  const persistProgress = useCallback((
-    reel: OfflineReel,
-    event: ReelPlaybackProgress | null,
-  ) => {
-    if (event) {
-      resumePositionsRef.current.set(reel.mediaPk, event.playbackPositionMs);
+  useEffect(() => {
+    let cancelled = false;
+    if (!focused) {
+      setPlaybackOwnershipReady(false);
+      return () => {
+        cancelled = true;
+      };
     }
-    progressChainRef.current = progressChainRef.current
-      .catch(() => undefined)
-      .then(async () => {
-        const alreadyQualified = qualifiedIdsRef.current.has(reel.mediaPk);
-        const result = await recordSnapshotPlayback(
-          snapshotId,
-          reel.mediaPk,
-          reel.snapshotPosition,
-          event?.playbackPositionMs ??
-            resumePositionsRef.current.get(reel.mediaPk) ??
-            reel.savedPlaybackPositionMs,
-          event?.durationMs || reel.durationMs || 0,
-          event?.activeDeltaMs ?? 0,
-        );
-        if (result.qualified) qualifiedIdsRef.current.add(reel.mediaPk);
-        if (!mountedRef.current || alreadyQualified === result.qualified) return;
-        setReels(current => current.map(item => item.mediaPk === reel.mediaPk
-          ? {
-              ...item,
+
+    setPlaybackOwnershipReady(false);
+    pauseMediaPlayback()
+      .catch(() => false)
+      .finally(() => {
+        if (!cancelled) setPlaybackOwnershipReady(true);
+      });
+    return () => {
+      cancelled = true;
+      setPlaybackOwnershipReady(false);
+    };
+  }, [focused]);
+
+  const persistProgress = useCallback(
+    (reel: OfflineReel, event: ReelPlaybackProgress | null) => {
+      if (event) {
+        resumePositionsRef.current.set(reel.mediaPk, event.playbackPositionMs);
+      }
+      progressChainRef.current = progressChainRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const alreadyQualified = qualifiedIdsRef.current.has(reel.mediaPk);
+          const result = await recordSnapshotPlayback(
+            snapshotId,
+            reel.mediaPk,
+            reel.snapshotPosition,
+            event?.playbackPositionMs ??
+              resumePositionsRef.current.get(reel.mediaPk) ??
+              reel.savedPlaybackPositionMs,
+            event?.durationMs || reel.durationMs || 0,
+            event?.activeDeltaMs ?? 0,
+          );
+          if (result.qualified) qualifiedIdsRef.current.add(reel.mediaPk);
+          if (!mountedRef.current || alreadyQualified === result.qualified)
+            return;
+
+          setReels(current => {
+            const index = reelIndexRef.current.get(reel.mediaPk);
+            if (
+              index === undefined ||
+              current[index]?.mediaPk !== reel.mediaPk
+            ) {
+              return current;
+            }
+            const next = [...current];
+            next[index] = {
+              ...next[index],
               activePlaybackMs: result.activePlaybackMs,
               qualifiedWatched: result.qualified,
               qualifiedWatchedAt: result.qualified
-                ? item.qualifiedWatchedAt ?? Date.now()
-                : item.qualifiedWatchedAt,
-            }
-          : item));
-      });
-  }, [snapshotId]);
+                ? next[index].qualifiedWatchedAt ?? Date.now()
+                : next[index].qualifiedWatchedAt,
+            };
+            reelsRef.current = next;
+            return next;
+          });
+        });
+    },
+    [snapshotId],
+  );
 
   const flushPendingProgress = useCallback(() => {
     const pending = pendingProgressRef.current;
@@ -252,60 +315,118 @@ function OfflineReelsSurface({onBack, snapshotId}: Props) {
 
   useEffect(() => () => flushPendingProgress(), [flushPendingProgress]);
 
-  const handlePlaybackProgress = useCallback((
-    event: NativeSyntheticEvent<ReelPlaybackProgress>,
-  ) => {
-    const reel = reelsRef.current[activeIndexRef.current];
-    if (
-      !reel ||
-      !settledRef.current ||
-      !focused ||
-      !appActiveRef.current ||
-      event.nativeEvent.sourcePath !== reel.videoLocalPath
-    ) return;
+  const handlePlaybackProgress = useCallback(
+    (reel: OfflineReel, event: NativeSyntheticEvent<ReelPlaybackProgress>) => {
+      if (
+        reelsRef.current[activeIndexRef.current]?.mediaPk !== reel.mediaPk ||
+        scrollingRef.current ||
+        !focused ||
+        !appActiveRef.current ||
+        !playbackOwnershipReady ||
+        event.nativeEvent.sourcePath !== reel.videoLocalPath
+      ) {
+        return;
+      }
 
-    const previous = pendingProgressRef.current;
-    pendingProgressRef.current = {
-      activeDeltaMs:
-        (previous?.reel.mediaPk === reel.mediaPk ? previous.activeDeltaMs : 0) +
-        event.nativeEvent.activeDeltaMs,
-      event: event.nativeEvent,
-      reel,
-    };
-    if (
-      Date.now() - lastProgressWriteRef.current >= PROGRESS_WRITE_INTERVAL_MS ||
-      !event.nativeEvent.isPlaying
-    ) flushPendingProgress();
-  }, [flushPendingProgress, focused]);
+      const previous = pendingProgressRef.current;
+      pendingProgressRef.current = {
+        activeDeltaMs:
+          (previous?.reel.mediaPk === reel.mediaPk
+            ? previous.activeDeltaMs
+            : 0) + event.nativeEvent.activeDeltaMs,
+        event: event.nativeEvent,
+        reel,
+      };
+      if (
+        Date.now() - lastProgressWriteRef.current >=
+          PROGRESS_WRITE_INTERVAL_MS ||
+        !event.nativeEvent.isPlaying
+      ) {
+        flushPendingProgress();
+      }
+    },
+    [flushPendingProgress, focused, playbackOwnershipReady],
+  );
 
+  const playbackQualified =
+    focused && appActive && playbackOwnershipReady && !scrolling;
   const activeReel = reels[activeIndex];
-  const playbackQualified = focused && appActive && settled;
-  const activeVideoPath = activeReel?.downloadState === 'ready'
-    ? activeReel.videoLocalPath || ''
-    : '';
-  const activeVideoPathRef = useRef(activeVideoPath);
-  activeVideoPathRef.current = activeVideoPath;
-  const activeResumePositionMs = reelResumePosition(activeReel ? {
-    ...activeReel,
-    qualifiedWatched: qualifiedIdsRef.current.has(activeReel.mediaPk),
-    savedPlaybackPositionMs:
-      resumePositionsRef.current.get(activeReel.mediaPk) ??
-      activeReel.savedPlaybackPositionMs,
-  } : undefined);
-  const activeVideoVisible = Boolean(activeVideoPath) &&
-    playbackQualified &&
-    renderedSourcePath === activeVideoPath;
+  const activeMediaPk = activeReel?.mediaPk;
 
   useEffect(() => {
-    if (renderedSourcePath && renderedSourcePath !== activeVideoPath) {
-      setRenderedSourcePath(null);
+    if (!activeMediaPk || !playbackQualified) return;
+    const reel = reelsRef.current[activeIndexRef.current];
+    if (reel?.mediaPk === activeMediaPk) persistProgress(reel, null);
+  }, [activeMediaPk, persistProgress, playbackQualified]);
+
+  const finishScroll = useCallback(
+    (offset: number) => {
+      if (viewportHeightRef.current <= 0 || reelsRef.current.length === 0) {
+        return;
+      }
+      flushPendingProgress();
+      const nextIndex = settledReelIndex(
+        offset,
+        viewportHeightRef.current,
+        reelsRef.current.length,
+      );
+      if (nextIndex !== activeIndexRef.current) {
+        activeIndexRef.current = nextIndex;
+        setActiveIndex(nextIndex);
+        setPaused(false);
+      }
+      scrollingRef.current = false;
+      setScrolling(false);
+      if (pendingDownloadRefreshRef.current) scheduleDownloadRefresh();
+    },
+    [flushPendingProgress, scheduleDownloadRefresh],
+  );
+
+  const beginScroll = useCallback(() => {
+    flushPendingProgress();
+    scrollingRef.current = true;
+    setScrolling(true);
+    setSpeedMenuOpen(false);
+    if (downloadRefreshTimerRef.current) {
+      clearTimeout(downloadRefreshTimerRef.current);
+      downloadRefreshTimerRef.current = null;
+      pendingDownloadRefreshRef.current = true;
     }
-  }, [activeVideoPath, renderedSourcePath]);
+  }, [flushPendingProgress]);
 
-  useEffect(() => {
-    if (!activeReel || !playbackQualified) return;
-    persistProgress(activeReel, null);
-  }, [activeReel, persistProgress, playbackQualified]);
+  const handleDragEnd = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const velocity = Math.abs(event.nativeEvent.velocity?.y ?? 0);
+      if (velocity <= SCROLL_VELOCITY_EPSILON) {
+        finishScroll(event.nativeEvent.contentOffset.y);
+      }
+    },
+    [finishScroll],
+  );
+
+  const handleViewportLayout = useCallback((height: number) => {
+    if (
+      height <= 0 ||
+      Math.abs(height - viewportHeightRef.current) <= VIEWPORT_CHANGE_TOLERANCE
+    ) {
+      return;
+    }
+    const hadViewport = viewportHeightRef.current > 0;
+    viewportHeightRef.current = height;
+    setViewportHeight(height);
+
+    if (!hadViewport || !listRef.current) return;
+    if (viewportAlignmentFrameRef.current !== null) {
+      cancelAnimationFrame(viewportAlignmentFrameRef.current);
+    }
+    viewportAlignmentFrameRef.current = requestAnimationFrame(() => {
+      viewportAlignmentFrameRef.current = null;
+      listRef.current?.scrollToOffset({
+        animated: false,
+        offset: activeIndexRef.current * height,
+      });
+    });
+  }, []);
 
   const toggleCaption = useCallback((mediaPk: string) => {
     setExpandedCaptions(current => {
@@ -316,153 +437,115 @@ function OfflineReelsSurface({onBack, snapshotId}: Props) {
     });
   }, []);
 
-  const retry = useCallback(async (mediaPk: string) => {
-    const queued = await retryReelDownload(mediaPk).catch(() => false);
-    ToastAndroid.show(
-      queued ? 'Download queued' : 'Capture this Reel again on Instagram',
-      ToastAndroid.SHORT,
-    );
-    refresh().catch(() => undefined);
-  }, [refresh]);
+  const retry = useCallback(
+    async (mediaPk: string) => {
+      const queued = await retryReelDownload(mediaPk).catch(() => false);
+      ToastAndroid.show(
+        queued ? 'Download queued' : 'Capture this Reel again on Instagram',
+        ToastAndroid.SHORT,
+      );
+      refresh().catch(() => undefined);
+    },
+    [refresh],
+  );
 
   const chooseSpeed = useCallback((value: number) => {
     setPlaybackSpeed(value);
     setSpeedMenuOpen(false);
-    setUiPreference(DOOMSCROLL_SPEED_PREFERENCE, String(value)).catch(() => undefined);
-  }, []);
-
-  const settleAtOffset = useCallback((offset: number) => {
-    if (!surfaceHeight || reels.length === 0) return;
-    const page = settledReelPage(offset, surfaceHeight, reels.length);
-    const generation = interactionGenerationRef.current;
-    const finish = () => {
-      if (generation !== interactionGenerationRef.current) return;
-      alignmentFrameRef.current = null;
-      lastOffsetRef.current = page.exactOffset;
-      if (page.index !== activeIndexRef.current) {
-        setRenderedSourcePath(null);
-        activeIndexRef.current = page.index;
-        setActiveIndex(page.index);
-        setPaused(false);
-      }
-      settledRef.current = true;
-      setSettled(true);
-      if (pendingDownloadRefreshRef.current && !downloadRefreshTimerRef.current) {
-        downloadRefreshTimerRef.current = setTimeout(() => {
-          downloadRefreshTimerRef.current = null;
-          pendingDownloadRefreshRef.current = false;
-          refresh().catch(() => undefined);
-        }, DOWNLOAD_REFRESH_DELAY_MS);
-      }
-    };
-
-    const list = listRef.current;
-    if (page.needsCorrection && list) {
-      lastOffsetRef.current = page.exactOffset;
-      if (alignmentFrameRef.current !== null) {
-        cancelAnimationFrame(alignmentFrameRef.current);
-      }
-      list.scrollToIndex({
-        animated: false,
-        index: page.index,
-        viewPosition: 0,
-      }).then(() => {
-        if (generation !== interactionGenerationRef.current) return;
-        alignmentFrameRef.current = requestAnimationFrame(finish);
-      }).catch(() => {
-        if (generation !== interactionGenerationRef.current) return;
-        list.scrollToOffset({animated: false, offset: page.exactOffset});
-        alignmentFrameRef.current = requestAnimationFrame(finish);
-      });
-      return;
-    }
-    finish();
-  }, [reels.length, refresh, surfaceHeight]);
-
-  const cancelDragEndSettle = useCallback(() => {
-    if (!dragEndTimerRef.current) return;
-    clearTimeout(dragEndTimerRef.current);
-    dragEndTimerRef.current = null;
-  }, []);
-
-  const beginScroll = useCallback(() => {
-    flushPendingProgress();
-    interactionGenerationRef.current += 1;
-    cancelDragEndSettle();
-    momentumRef.current = false;
-    if (downloadRefreshTimerRef.current) {
-      clearTimeout(downloadRefreshTimerRef.current);
-      downloadRefreshTimerRef.current = null;
-      pendingDownloadRefreshRef.current = true;
-    }
-    if (alignmentFrameRef.current !== null) {
-      cancelAnimationFrame(alignmentFrameRef.current);
-      alignmentFrameRef.current = null;
-    }
-    settledRef.current = false;
-    setSettled(false);
-    setSpeedMenuOpen(false);
-  }, [cancelDragEndSettle, flushPendingProgress]);
-
-  const handleSurfaceLayout = useCallback((height: number) => {
-    const nextHeight = height;
-    if (
-      nextHeight <= 0 ||
-      Math.abs(nextHeight - surfaceHeightRef.current) <= LAYOUT_CHANGE_TOLERANCE
-    ) return;
-    surfaceHeightRef.current = nextHeight;
-    lastOffsetRef.current = activeIndexRef.current * nextHeight;
-    settledRef.current = false;
-    setSettled(false);
-    setSurfaceHeight(nextHeight);
-  }, []);
-
-  const positionInitialPage = useCallback(() => {
-    if (!surfaceHeight || reels.length === 0 || !listRef.current) return;
-    const targetIndex = Math.min(
-      activeIndexRef.current,
-      reels.length - 1,
+    setUiPreference(DOOMSCROLL_SPEED_PREFERENCE, String(value)).catch(
+      () => undefined,
     );
-    const targetOffset = targetIndex * surfaceHeight;
-    const list = listRef.current;
-    const generation = interactionGenerationRef.current;
-    lastOffsetRef.current = targetOffset;
-    if (alignmentFrameRef.current !== null) {
-      cancelAnimationFrame(alignmentFrameRef.current);
-    }
-    const finishInitialPosition = () => {
-      if (generation !== interactionGenerationRef.current) return;
-      alignmentFrameRef.current = requestAnimationFrame(() => {
-        alignmentFrameRef.current = null;
-        const actualOffset = list.getAbsoluteLastScrollOffset();
-        lastOffsetRef.current = actualOffset;
-        settleAtOffset(actualOffset);
-      });
-    };
-    list.scrollToIndex({
-      animated: false,
-      index: targetIndex,
-      viewPosition: 0,
-    }).then(finishInitialPosition).catch(() => {
-      list.scrollToOffset({animated: false, offset: targetOffset});
-      finishInitialPosition();
-    });
-  }, [reels.length, settleAtOffset, surfaceHeight]);
+  }, []);
 
   const copyLink = useCallback((reel: OfflineReel) => {
     Clipboard.setString(canonicalReelPermalink(reel));
     ToastAndroid.show('Link copied', ToastAndroid.SHORT);
   }, []);
 
-  const listExtraData = useMemo(() => ({
-    activeIndex,
-    activeVideoVisible,
-    expandedCaptions,
-  }), [
-    activeIndex,
-    activeVideoVisible,
-    expandedCaptions,
-  ]);
+  const leaveViewer = useCallback(() => {
+    flushPendingProgress();
+    onBack();
+  }, [flushPendingProgress, onBack]);
+
+  const getItemLayout = useCallback(
+    (_data: ArrayLike<OfflineReel> | null | undefined, index: number) => ({
+      index,
+      length: viewportHeight,
+      offset: viewportHeight * index,
+    }),
+    [viewportHeight],
+  );
+
+  const renderItem = useCallback(
+    ({ item, index }: { item: OfflineReel; index: number }) => {
+      const active = index === activeIndex;
+      const playerEnabled =
+        Boolean(NativeReelPlayerView) &&
+        Math.abs(index - activeIndex) <= PLAYER_NEIGHBOUR_DISTANCE;
+      const resumePositionMs = reelResumePosition({
+        ...item,
+        qualifiedWatched: qualifiedIdsRef.current.has(item.mediaPk),
+        savedPlaybackPositionMs:
+          resumePositionsRef.current.get(item.mediaPk) ??
+          item.savedPlaybackPositionMs,
+      });
+
+      return (
+        <OfflineReelPage
+          active={active}
+          bottomInset={insets.bottom}
+          expanded={expandedCaptions.has(item.mediaPk)}
+          height={viewportHeight}
+          item={item}
+          muted={muted}
+          onCopyLink={() => copyLink(item)}
+          onPlaybackProgress={event => handlePlaybackProgress(item, event)}
+          onRetry={() => {
+            retry(item.mediaPk).catch(() => undefined);
+          }}
+          onToggleCaption={() => toggleCaption(item.mediaPk)}
+          paused={paused}
+          playbackEnabled={playbackQualified}
+          playbackSpeed={playbackSpeed}
+          playerEnabled={playerEnabled}
+          resumePositionMs={resumePositionMs}
+        />
+      );
+    },
+    [
+      activeIndex,
+      copyLink,
+      expandedCaptions,
+      handlePlaybackProgress,
+      insets.bottom,
+      muted,
+      paused,
+      playbackQualified,
+      playbackSpeed,
+      retry,
+      toggleCaption,
+      viewportHeight,
+    ],
+  );
+
+  const listExtraData = useMemo(
+    () => ({
+      activeIndex,
+      expandedCaptions,
+      muted,
+      paused,
+      playbackQualified,
+      playbackSpeed,
+    }),
+    [
+      activeIndex,
+      expandedCaptions,
+      muted,
+      paused,
+      playbackQualified,
+      playbackSpeed,
+    ],
+  );
 
   if (loading && reels.length === 0) {
     return (
@@ -480,7 +563,7 @@ function OfflineReelsSurface({onBack, snapshotId}: Props) {
         <Text style={styles.centerCopy}>
           {loadError || 'No captured Reels were found.'}
         </Text>
-        <Pressable onPress={onBack} style={styles.centerButton}>
+        <Pressable onPress={leaveViewer} style={styles.centerButton}>
           <Text style={styles.centerButtonText}>Back to snapshots</Text>
         </Pressable>
       </View>
@@ -489,120 +572,85 @@ function OfflineReelsSurface({onBack, snapshotId}: Props) {
 
   return (
     <View
-      onLayout={event => handleSurfaceLayout(event.nativeEvent.layout.height)}
-      style={styles.container}>
-      {surfaceHeight > 0 && NativeReelPlayerView ? (
-        <NativeReelPlayerView
-          muted={muted}
-          onFirstFrame={event => {
-            if (event.nativeEvent.sourcePath === activeVideoPathRef.current) {
-              setRenderedSourcePath(event.nativeEvent.sourcePath);
-            }
-          }}
-          onPlaybackError={event => {
-            if (event.nativeEvent.sourcePath !== activeVideoPathRef.current) return;
-            setRenderedSourcePath(null);
-            ToastAndroid.show(event.nativeEvent.message, ToastAndroid.LONG);
-          }}
-          onPlaybackProgress={handlePlaybackProgress}
-          paused={paused || !playbackQualified || !activeVideoPath}
-          pointerEvents="none"
-          playbackSpeed={playbackSpeed}
-          resumePositionMs={activeResumePositionMs}
-          sourcePath={activeVideoPath}
-          style={styles.player}
-          visibilityQualified={Boolean(activeVideoPath) && playbackQualified}
-        />
-      ) : null}
-
-      {surfaceHeight > 0 ? (
-        <FlashList
+      onLayout={event => handleViewportLayout(event.nativeEvent.layout.height)}
+      style={styles.container}
+    >
+      {viewportHeight > 0 ? (
+        <FlatList
           bounces={false}
           data={reels}
           decelerationRate="fast"
           disableIntervalMomentum
-          drawDistance={surfaceHeight * 2}
           extraData={listExtraData}
+          getItemLayout={getItemLayout}
+          initialNumToRender={3}
           initialScrollIndex={activeIndex}
-          key={`${snapshotId}:${surfaceHeight}`}
           keyExtractor={item => item.mediaPk}
-          maintainVisibleContentPosition={{disabled: true}}
-          onLoad={positionInitialPage}
-          onMomentumScrollBegin={() => {
-            momentumRef.current = true;
-            cancelDragEndSettle();
-          }}
-          onMomentumScrollEnd={event => {
-            momentumRef.current = false;
-            cancelDragEndSettle();
-            lastOffsetRef.current = event.nativeEvent.contentOffset.y;
-            settleAtOffset(lastOffsetRef.current);
-          }}
-          onScroll={event => {
-            lastOffsetRef.current = event.nativeEvent.contentOffset.y;
-          }}
+          maxToRenderPerBatch={3}
+          onMomentumScrollBegin={beginScroll}
+          onMomentumScrollEnd={event =>
+            finishScroll(event.nativeEvent.contentOffset.y)
+          }
           onScrollBeginDrag={beginScroll}
-          onScrollEndDrag={event => {
-            lastOffsetRef.current = event.nativeEvent.contentOffset.y;
-            cancelDragEndSettle();
-            dragEndTimerRef.current = setTimeout(() => {
-              dragEndTimerRef.current = null;
-              if (!momentumRef.current) {
-                settleAtOffset(lastOffsetRef.current);
-              }
-            }, DRAG_END_SETTLE_MS);
-          }}
+          onScrollEndDrag={handleDragEnd}
           overScrollMode="never"
+          pagingEnabled
           ref={listRef}
           removeClippedSubviews={false}
-          renderItem={({item, index}) => (
-            <OfflineReelPage
-              bottomInset={insets.bottom}
-              expanded={expandedCaptions.has(item.mediaPk)}
-              height={surfaceHeight}
-              item={item}
-              onCopyLink={() => copyLink(item)}
-              onRetry={() => { retry(item.mediaPk).catch(() => undefined); }}
-              onToggleCaption={() => toggleCaption(item.mediaPk)}
-              videoVisible={index === activeIndex && activeVideoVisible}
-            />
-          )}
-          scrollEventThrottle={16}
+          renderItem={renderItem}
           showsVerticalScrollIndicator={false}
-          snapToAlignment="start"
-          snapToInterval={surfaceHeight}
+          windowSize={5}
         />
       ) : null}
 
       <View
         pointerEvents="box-none"
-        style={[styles.header, {top: insets.top + spacing.sm}]}>
-        <ControlButton label="Back to Reel snapshots" onPress={onBack}>
+        style={[styles.header, { top: insets.top + spacing.sm }]}
+      >
+        <ControlButton label="Back to Reel snapshots" onPress={leaveViewer}>
           <ArrowLeft color={colors.white} size={24} strokeWidth={2} />
         </ControlButton>
         <View pointerEvents="none" style={styles.headerTitleWrap}>
           <Text style={styles.headerTitle}>Reels</Text>
-          <Text style={styles.headerStats}>{activeIndex + 1} of {reels.length}</Text>
+          <Text style={styles.headerStats}>
+            {activeIndex + 1} of {reels.length}
+          </Text>
         </View>
         <ControlButton
           label={paused ? 'Play Reel' : 'Pause Reel'}
-          onPress={() => setPaused(value => !value)}>
+          onPress={() => setPaused(value => !value)}
+        >
           {paused ? (
-            <Play color={colors.white} fill={colors.white} size={19} strokeWidth={1.8} />
+            <Play
+              color={colors.white}
+              fill={colors.white}
+              size={19}
+              strokeWidth={1.8}
+            />
           ) : (
-            <Pause color={colors.white} fill={colors.white} size={19} strokeWidth={1.8} />
+            <Pause
+              color={colors.white}
+              fill={colors.white}
+              size={19}
+              strokeWidth={1.8}
+            />
           )}
         </ControlButton>
         <Pressable
           accessibilityLabel={`Playback speed ${playbackSpeed} times`}
           accessibilityRole="button"
           onPress={() => setSpeedMenuOpen(value => !value)}
-          style={({pressed}) => [styles.speedButton, pressed && styles.pressed]}>
+          style={({ pressed }) => [
+            styles.speedButton,
+            pressed && styles.pressed,
+          ]}
+        >
           <Text style={styles.speedButtonText}>{playbackSpeed}×</Text>
         </Pressable>
         <ControlButton
           label={muted ? 'Unmute Reel' : 'Mute Reel'}
-          onPress={() => setMuted(value => !value)}>
+          onPress={() => setMuted(value => !value)}
+        >
           {muted ? (
             <VolumeX color={colors.white} size={21} strokeWidth={2} />
           ) : (
@@ -612,19 +660,25 @@ function OfflineReelsSurface({onBack, snapshotId}: Props) {
       </View>
 
       {speedMenuOpen ? (
-        <View style={[styles.speedMenu, {top: insets.top + 62}]}>
+        <View style={[styles.speedMenu, { top: insets.top + 62 }]}>
           {REEL_PLAYBACK_SPEEDS.map(value => (
             <Pressable
               accessibilityLabel={`${value} times playback speed`}
               accessibilityRole="radio"
-              accessibilityState={{checked: playbackSpeed === value}}
+              accessibilityState={{ checked: playbackSpeed === value }}
               key={value}
               onPress={() => chooseSpeed(value)}
-              style={({pressed}) => [styles.speedMenuItem, pressed && styles.pressed]}>
-              <Text style={[
-                styles.speedMenuText,
-                playbackSpeed === value && styles.speedMenuTextSelected,
-              ]}>
+              style={({ pressed }) => [
+                styles.speedMenuItem,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.speedMenuText,
+                  playbackSpeed === value && styles.speedMenuTextSelected,
+                ]}
+              >
                 {value}×
               </Text>
             </Pressable>
@@ -636,40 +690,91 @@ function OfflineReelsSurface({onBack, snapshotId}: Props) {
 }
 
 function OfflineReelPage({
+  active,
   bottomInset,
   expanded,
   height,
   item,
+  muted,
   onCopyLink,
+  onPlaybackProgress,
   onRetry,
   onToggleCaption,
-  videoVisible,
+  paused,
+  playbackEnabled,
+  playbackSpeed,
+  playerEnabled,
+  resumePositionMs,
 }: {
+  active: boolean;
   bottomInset: number;
   expanded: boolean;
   height: number;
   item: OfflineReel;
+  muted: boolean;
   onCopyLink: () => void;
+  onPlaybackProgress: (
+    event: NativeSyntheticEvent<ReelPlaybackProgress>,
+  ) => void;
   onRetry: () => void;
   onToggleCaption: () => void;
-  videoVisible: boolean;
+  paused: boolean;
+  playbackEnabled: boolean;
+  playbackSpeed: number;
+  playerEnabled: boolean;
+  resumePositionMs: number;
 }) {
-  const videoReady = item.downloadState === 'ready' && Boolean(item.videoLocalPath);
+  const videoReady =
+    item.downloadState === 'ready' && Boolean(item.videoLocalPath);
+  const videoPath = videoReady ? item.videoLocalPath || '' : '';
   const coverUri = localFileUri(item.coverLocalPath);
   const avatarUri = localFileUri(item.authorProfilePicLocalPath);
+  const [renderedSourcePath, setRenderedSourcePath] = useState<string | null>(
+    null,
+  );
+  const mountPlayer = playerEnabled && videoReady && Boolean(videoPath);
+  const firstFrameVisible = mountPlayer && renderedSourcePath === videoPath;
+
+  useEffect(() => {
+    setRenderedSourcePath(current =>
+      mountPlayer && current === videoPath ? current : null,
+    );
+  }, [mountPlayer, videoPath]);
 
   return (
-    <View style={[
-      styles.reel,
-      videoVisible && styles.reelVideoVisible,
-      {height},
-    ]}>
-      {!videoVisible || !videoReady ? (
+    <View collapsable={false} style={[styles.reel, { height }]}>
+      {mountPlayer && NativeReelPlayerView ? (
+        <NativeReelPlayerView
+          muted={!active || muted}
+          onFirstFrame={event => {
+            if (event.nativeEvent.sourcePath === videoPath) {
+              setRenderedSourcePath(event.nativeEvent.sourcePath);
+            }
+          }}
+          onPlaybackError={event => {
+            if (event.nativeEvent.sourcePath !== videoPath) return;
+            setRenderedSourcePath(null);
+            if (active) {
+              ToastAndroid.show(event.nativeEvent.message, ToastAndroid.LONG);
+            }
+          }}
+          onPlaybackProgress={onPlaybackProgress}
+          paused={!active || paused || !playbackEnabled}
+          playbackSpeed={playbackSpeed}
+          pointerEvents="none"
+          resumePositionMs={resumePositionMs}
+          sourcePath={videoPath}
+          style={styles.player}
+          visibilityQualified={active && playbackEnabled}
+        />
+      ) : null}
+
+      {!firstFrameVisible ? (
         coverUri ? (
           <Image
             accessibilityIgnoresInvertColors
             resizeMode="cover"
-            source={{uri: coverUri}}
+            source={{ uri: coverUri }}
             style={StyleSheet.absoluteFill}
           />
         ) : (
@@ -680,23 +785,19 @@ function OfflineReelPage({
       ) : null}
 
       <LinearGradient
-        colors={[
-          colors.transparent,
-          'rgba(0,0,0,0.08)',
-          'rgba(0,0,0,0.68)',
-        ]}
+        colors={[colors.transparent, 'rgba(0,0,0,0.08)', 'rgba(0,0,0,0.68)']}
         locations={[0, 0.42, 1]}
         pointerEvents="none"
         style={styles.bottomGradient}
       />
 
-      <View style={[styles.reelMeta, {bottom: bottomInset + spacing.xl}]}>
+      <View style={[styles.reelMeta, { bottom: bottomInset + spacing.xl }]}>
         <View style={styles.authorRow}>
           <View style={styles.avatar}>
             {avatarUri ? (
               <Image
                 accessibilityIgnoresInvertColors
-                source={{uri: avatarUri}}
+                source={{ uri: avatarUri }}
                 style={styles.avatarImage}
               />
             ) : (
@@ -721,7 +822,10 @@ function OfflineReelPage({
 
         {item.caption ? (
           <Pressable accessibilityRole="button" onPress={onToggleCaption}>
-            <Text numberOfLines={expanded ? undefined : 2} style={styles.caption}>
+            <Text
+              numberOfLines={expanded ? undefined : 2}
+              style={styles.caption}
+            >
               {item.caption}
             </Text>
           </Pressable>
@@ -729,12 +833,14 @@ function OfflineReelPage({
 
         <View style={styles.audioRow}>
           <Music2 color={colors.white} size={14} strokeWidth={2} />
-          <Text numberOfLines={1} style={styles.audioText}>{audioLabel(item)}</Text>
+          <Text numberOfLines={1} style={styles.audioText}>
+            {audioLabel(item)}
+          </Text>
         </View>
         {!videoReady ? <DownloadNotice item={item} onRetry={onRetry} /> : null}
       </View>
 
-      <View style={[styles.actionRail, {bottom: bottomInset + spacing.xl}]}>
+      <View style={[styles.actionRail, { bottom: bottomInset + spacing.xl }]}>
         <OnlineAction
           color={item.hasLiked ? colors.accent : colors.white}
           count={item.likeCount}
@@ -742,10 +848,22 @@ function OfflineReelPage({
           icon={Heart}
           label="Like"
         />
-        <OnlineAction count={item.commentCount} icon={MessageCircle} label="Comments" />
+        <OnlineAction
+          count={item.commentCount}
+          icon={MessageCircle}
+          label="Comments"
+        />
         <OnlineAction count={item.repostCount} icon={Send} label="Share" />
-        <DirectAction icon={Link2} label="Copy Reel link" onPress={onCopyLink} />
-        <OnlineAction filled={item.hasViewerSaved} icon={Bookmark} label="Save" />
+        <DirectAction
+          icon={Link2}
+          label="Copy Reel link"
+          onPress={onCopyLink}
+        />
+        <OnlineAction
+          filled={item.hasViewerSaved}
+          icon={Bookmark}
+          label="Save"
+        />
         <OnlineAction icon={MoreHorizontal} label="More" />
       </View>
     </View>
@@ -766,7 +884,11 @@ function ControlButton({
       accessibilityLabel={label}
       accessibilityRole="button"
       onPress={onPress}
-      style={({pressed}) => [styles.headerIconButton, pressed && styles.pressed]}>
+      style={({ pressed }) => [
+        styles.headerIconButton,
+        pressed && styles.pressed,
+      ]}
+    >
       {children}
     </Pressable>
   );
@@ -780,8 +902,15 @@ function FilmPlaceholder() {
   );
 }
 
-function DownloadNotice({item, onRetry}: {item: OfflineReel; onRetry: () => void}) {
-  const active = item.downloadState === 'queued' || item.downloadState === 'downloading';
+function DownloadNotice({
+  item,
+  onRetry,
+}: {
+  item: OfflineReel;
+  onRetry: () => void;
+}) {
+  const active =
+    item.downloadState === 'queued' || item.downloadState === 'downloading';
   return (
     <View style={styles.downloadNotice}>
       {active ? (
@@ -794,8 +923,8 @@ function DownloadNotice({item, onRetry}: {item: OfflineReel; onRetry: () => void
           {active
             ? `Saving for offline · ${Math.round(item.downloadProgress * 100)}%`
             : item.downloadState === 'paused_low_storage'
-              ? 'Paused — low storage'
-              : 'Video unavailable offline'}
+            ? 'Paused — low storage'
+            : 'Video unavailable offline'}
         </Text>
         {!active && item.downloadError ? (
           <Text numberOfLines={1} style={styles.downloadDetail}>
@@ -807,7 +936,8 @@ function DownloadNotice({item, onRetry}: {item: OfflineReel; onRetry: () => void
         <Pressable
           accessibilityLabel="Retry Reel download"
           onPress={onRetry}
-          style={styles.retryDownload}>
+          style={styles.retryDownload}
+        >
           <Text style={styles.retryDownloadText}>Retry</Text>
         </Pressable>
       ) : null}
@@ -829,7 +959,8 @@ function DirectAction({
       accessibilityLabel={label}
       accessibilityRole="button"
       onPress={onPress}
-      style={({pressed}) => [styles.action, pressed && styles.pressed]}>
+      style={({ pressed }) => [styles.action, pressed && styles.pressed]}
+    >
       <Icon color={colors.white} size={28} strokeWidth={1.9} />
     </Pressable>
   );
@@ -852,12 +983,20 @@ function OnlineAction({
     <Pressable
       accessibilityLabel={label}
       accessibilityRole="button"
-      onPress={() => ToastAndroid.show(
-        'Available on Instagram when connected',
-        ToastAndroid.SHORT,
-      )}
-      style={({pressed}) => [styles.action, pressed && styles.pressed]}>
-      <Icon color={color} fill={filled ? color : 'none'} size={29} strokeWidth={1.9} />
+      onPress={() =>
+        ToastAndroid.show(
+          'Available on Instagram when connected',
+          ToastAndroid.SHORT,
+        )
+      }
+      style={({ pressed }) => [styles.action, pressed && styles.pressed]}
+    >
+      <Icon
+        color={color}
+        fill={filled ? color : 'none'}
+        size={29}
+        strokeWidth={1.9}
+      />
       {count !== undefined && count !== null ? (
         <Text style={styles.actionCount}>{formatCount(count)}</Text>
       ) : null}
@@ -888,7 +1027,7 @@ function formatCount(value: number) {
 
 const textShadow = {
   textShadowColor: colors.black,
-  textShadowOffset: {height: 1, width: 0},
+  textShadowOffset: { height: 1, width: 0 },
   textShadowRadius: 4,
 } as const;
 
@@ -907,8 +1046,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: -1,
   },
-  actionRail: {alignItems: 'center', position: 'absolute', right: spacing.sm},
-  audioRow: {alignItems: 'center', flexDirection: 'row', marginTop: spacing.md},
+  actionRail: {
+    alignItems: 'center',
+    position: 'absolute',
+    right: spacing.sm,
+  },
+  audioRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    marginTop: spacing.md,
+  },
   audioText: {
     ...textShadow,
     color: colors.white,
@@ -917,7 +1064,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginLeft: spacing.sm,
   },
-  authorRow: {alignItems: 'center', flexDirection: 'row', marginBottom: spacing.sm},
+  authorRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    marginBottom: spacing.sm,
+  },
   avatar: {
     alignItems: 'center',
     backgroundColor: colors.surfaceRaised,
@@ -929,8 +1080,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     width: 36,
   },
-  avatarFallback: {color: colors.white, fontSize: 12, fontWeight: '800'},
-  avatarImage: {height: 36, width: 36},
+  avatarFallback: { color: colors.white, fontSize: 12, fontWeight: '800' },
+  avatarImage: { height: 36, width: 36 },
   bottomGradient: {
     bottom: 0,
     height: 228,
@@ -951,7 +1102,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingVertical: spacing.md,
   },
-  centerButtonText: {color: colors.black, fontSize: typography.body, fontWeight: '700'},
+  centerButtonText: {
+    color: colors.black,
+    fontSize: typography.body,
+    fontWeight: '700',
+  },
   centerCopy: {
     color: colors.textMuted,
     fontSize: typography.body,
@@ -965,10 +1120,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: spacing.xxl,
   },
-  centerTitle: {color: colors.text, fontSize: 18, fontWeight: '700'},
-  container: {backgroundColor: colors.black, flex: 1, overflow: 'hidden'},
-  downloadCopy: {flex: 1, marginLeft: spacing.sm, minWidth: 0},
-  downloadDetail: {color: 'rgba(255,255,255,0.62)', fontSize: 9, marginTop: 2},
+  centerTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
+  container: { backgroundColor: colors.black, flex: 1, overflow: 'hidden' },
+  downloadCopy: { flex: 1, marginLeft: spacing.sm, minWidth: 0 },
+  downloadDetail: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 9,
+    marginTop: 2,
+  },
   downloadNotice: {
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.62)',
@@ -978,7 +1137,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
-  downloadTitle: {color: colors.white, fontSize: 10, fontWeight: '700'},
+  downloadTitle: { color: colors.white, fontSize: 10, fontWeight: '700' },
   header: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -1007,7 +1166,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '800',
   },
-  headerTitleWrap: {flex: 1, marginLeft: spacing.sm, minWidth: 0},
+  headerTitleWrap: { flex: 1, marginLeft: spacing.sm, minWidth: 0 },
   missingCover: {
     alignItems: 'center',
     backgroundColor: colors.reelFallback,
@@ -1023,19 +1182,27 @@ const styles = StyleSheet.create({
     width: 58,
   },
   player: {
-    backgroundColor: colors.transparent,
+    backgroundColor: colors.black,
     bottom: 0,
     left: 0,
     position: 'absolute',
     right: 0,
     top: 0,
   },
-  pressed: {opacity: 0.58},
-  reel: {backgroundColor: colors.black, overflow: 'hidden', width: '100%'},
-  reelVideoVisible: {backgroundColor: colors.transparent},
-  reelMeta: {left: spacing.lg, maxWidth: '78%', position: 'absolute', right: 74},
-  retryDownload: {justifyContent: 'center', minHeight: 38, paddingLeft: spacing.md},
-  retryDownloadText: {color: colors.white, fontSize: 11, fontWeight: '700'},
+  pressed: { opacity: 0.58 },
+  reel: { backgroundColor: colors.black, overflow: 'hidden', width: '100%' },
+  reelMeta: {
+    left: spacing.lg,
+    maxWidth: '78%',
+    position: 'absolute',
+    right: 74,
+  },
+  retryDownload: {
+    justifyContent: 'center',
+    minHeight: 38,
+    paddingLeft: spacing.md,
+  },
+  retryDownloadText: { color: colors.white, fontSize: 11, fontWeight: '700' },
   speedButton: {
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.28)',
@@ -1046,7 +1213,7 @@ const styles = StyleSheet.create({
     minWidth: 48,
     paddingHorizontal: spacing.sm,
   },
-  speedButtonText: {color: colors.white, fontSize: 12, fontWeight: '800'},
+  speedButtonText: { color: colors.white, fontSize: 12, fontWeight: '800' },
   speedMenu: {
     backgroundColor: 'rgba(18,18,18,0.96)',
     borderRadius: radii.md,
@@ -1064,8 +1231,8 @@ const styles = StyleSheet.create({
     height: 44,
     justifyContent: 'center',
   },
-  speedMenuText: {color: colors.textMuted, fontSize: 12, fontWeight: '700'},
-  speedMenuTextSelected: {color: colors.white},
+  speedMenuText: { color: colors.textMuted, fontSize: 12, fontWeight: '700' },
+  speedMenuTextSelected: { color: colors.white },
   username: {
     ...textShadow,
     color: colors.white,
@@ -1074,7 +1241,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginLeft: spacing.sm,
   },
-  verifiedBadge: {marginLeft: spacing.xs},
+  verifiedBadge: { marginLeft: spacing.xs },
 });
 
 export default OfflineReelsSurface;

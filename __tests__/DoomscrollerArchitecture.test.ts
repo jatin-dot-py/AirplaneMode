@@ -3,7 +3,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), 'utf8');
+const read = (file: string) =>
+  fs.readFileSync(path.join(process.cwd(), file), 'utf8');
 
 describe('Doomscroller architecture', () => {
   test('uses a real root stack and restrained bottom tabs without the old shell', () => {
@@ -25,12 +26,15 @@ describe('Doomscroller architecture', () => {
   });
 
   test('initializes react-native-screens before fragment restoration', () => {
-    const activity = read('android/app/src/main/java/com/airplanemode/MainActivity.kt');
+    const activity = read(
+      'android/app/src/main/java/com/airplanemode/MainActivity.kt',
+    );
     const manifest = read('android/app/src/main/AndroidManifest.xml');
 
     expect(activity).toContain('RNScreensFragmentFactory');
-    expect(activity.indexOf('fragmentFactory = RNScreensFragmentFactory()'))
-      .toBeLessThan(activity.indexOf('super.onCreate(savedInstanceState)'));
+    expect(
+      activity.indexOf('fragmentFactory = RNScreensFragmentFactory()'),
+    ).toBeLessThan(activity.indexOf('super.onCreate(savedInstanceState)'));
     expect(manifest).toContain('android:enableOnBackInvokedCallback="false"');
   });
 
@@ -40,48 +44,59 @@ describe('Doomscroller architecture', () => {
     expect(webView).toContain('domStorageEnabled');
     expect(webView).toContain('thirdPartyCookiesEnabled');
     expect(webView).toContain('setSupportMultipleWindows={false}');
-    expect(webView).toContain("'instagram.com'");
-    expect(webView).toContain("'facebook.com'");
+    expect(webView).toContain('isWebNavigation');
+    expect(webView).not.toContain('onShouldStartLoadWithRequest=');
     expect(webView).not.toContain('incognito');
     expect(webView).not.toContain('onHttpError=');
   });
 
-  test('opens normal Instagram and never forces a redirect to Reels', () => {
+  test('opens every new snapshot at Reels and lets Instagram handle authentication', () => {
     const capture = read('src/modules/doomscroller/DoomscrollerModule.tsx');
     const navigator = read('src/navigation/AppNavigator.tsx');
 
-    expect(navigator).toContain("const INSTAGRAM_HOME_URL = 'https://www.instagram.com/'");
-    expect(capture).toContain('useState(homeUrl)');
-    expect(capture).not.toContain('navigateToReels');
-    expect(capture).not.toContain('instagramReelsUrl');
-    expect(capture).not.toContain("window.location.assign");
-    expect(capture).toContain('Navigate to Reels in Instagram when you are ready');
+    expect(navigator).toContain(
+      "const INSTAGRAM_REELS_URL = 'https://www.instagram.com/reels/'",
+    );
+    expect(navigator).toContain('initialUrl={INSTAGRAM_REELS_URL}');
+    expect(capture).toContain('useState(initialUrl)');
+    expect(capture).not.toContain('isAuthenticated');
+    expect(capture).not.toContain('window.location.assign');
   });
 
   test('consumes WebView Back and safely finalizes active capture before leaving', () => {
     const capture = read('src/modules/doomscroller/DoomscrollerModule.tsx');
 
-    expect(capture).toContain("BackHandler.addEventListener('hardwareBackPress'");
+    expect(capture).toMatch(
+      /BackHandler\.addEventListener\(\s*'hardwareBackPress'/,
+    );
     expect(capture).toContain("captureStateRef.current === 'fetching'");
     expect(capture).toContain("injectCommand('stop()')");
     expect(capture).toContain('webViewRef.current?.goBack()');
-    expect(capture).toContain("finishOnce(openSnapshot ? 'view-snapshot' : 'capture-closed')");
+    expect(capture).toContain(
+      "finishOnce(openSnapshot ? 'view-snapshot' : 'capture-closed')",
+    );
   });
 
-  test('keeps user-installed certificate trust out of production builds', () => {
+  test('allows device-owner CAs without enabling release cleartext transport', () => {
     const productionConfig = read(
       'android/app/src/main/res/xml/network_security_config.xml',
     );
     const debugConfig = read(
       'android/app/src/debug/res/xml/debug_network_security_config.xml',
     );
+    const previewConfig = read(
+      'android/app/src/preview/res/xml/network_security_config.xml',
+    );
 
     expect(productionConfig).toContain('cleartextTrafficPermitted="false"');
     expect(productionConfig).toContain('<certificates src="system" />');
-    expect(productionConfig).not.toContain('<certificates src="user" />');
+    expect(productionConfig).toContain('<certificates src="user" />');
     expect(productionConfig).not.toContain('overridePins="true"');
     expect(debugConfig).toContain('cleartextTrafficPermitted="true"');
     expect(debugConfig).toContain('<certificates src="user" />');
+    expect(previewConfig).toContain('cleartextTrafficPermitted="false"');
+    expect(previewConfig).toContain('<certificates src="system" />');
+    expect(previewConfig).toContain('<certificates src="user" />');
   });
 
   test('captures fetch and XHR, waits for persistence, and keeps credentials in-page', () => {
@@ -95,8 +110,12 @@ describe('Doomscroller architecture', () => {
     expect(script).toContain('await delay(1500,');
     expect(script).toContain("credentials: 'include'");
     expect(script).not.toContain('template: state.template');
-    expect(module).toContain('saveCaptureBatch(snapshotId, message.pageIndex, message.reels)');
-    expect(module).toContain('acknowledge(message.batchId, result.canContinue, result.stopReason)');
+    expect(module).toMatch(
+      /saveCaptureBatch\(\s*snapshotId,\s*message\.pageIndex,\s*message\.reels,?\s*\)/,
+    );
+    expect(module).toContain(
+      'acknowledge(message.batchId, result.canContinue, result.stopReason)',
+    );
   });
 
   test('stores Reels separately without request credentials or tracking payloads', () => {
@@ -120,11 +139,13 @@ describe('Doomscroller architecture', () => {
       'videoDashManifest',
       'rawGraphql',
     ]) {
-      expect(entities).not.toMatch(new RegExp(`\\bval\\s+${forbidden}\\b`, 'i'));
+      expect(entities).not.toMatch(
+        new RegExp(`\\bval\\s+${forbidden}\\b`, 'i'),
+      );
     }
   });
 
-  test('uses deterministic FlashList paging with one stable native player', () => {
+  test('owns video inside exact native-paged cells and prepares only neighbours', () => {
     const feed = read('src/modules/doomscroller/OfflineReelsSurface.tsx');
     const paging = read('src/modules/doomscroller/paging.ts');
     const nativePlayer = read(
@@ -134,32 +155,30 @@ describe('Doomscroller architecture', () => {
       'android/app/src/main/res/layout/airplane_reel_player_view.xml',
     );
 
-    expect(feed).toContain("from '@shopify/flash-list'");
+    expect(feed).toContain('FlatList');
+    expect(feed).not.toContain("from '@shopify/flash-list'");
     expect(feed.match(/<NativeReelPlayerView/g)).toHaveLength(1);
-    expect(feed).toContain('sourcePath={activeVideoPath}');
-    expect(feed).not.toContain('Math.abs(index - activeIndex) <= 1');
-    expect(feed).toContain('snapToInterval={surfaceHeight}');
+    expect(feed).toContain('sourcePath={videoPath}');
+    expect(feed).toContain('Math.abs(index - activeIndex) <=');
+    expect(feed).toContain('PLAYER_NEIGHBOUR_DISTANCE');
+    expect(feed).not.toContain('snapToInterval');
     expect(feed).toContain('disableIntervalMomentum');
-    expect(feed).toContain('onMomentumScrollEnd={event =>');
-    expect(feed).toContain('getAbsoluteLastScrollOffset()');
-    expect(feed).toContain('interactionGenerationRef');
-    expect(feed).toContain('scrollToOffset({');
+    expect(feed).toContain('pagingEnabled');
+    expect(feed).toContain('getItemLayout={getItemLayout}');
+    expect(feed).not.toContain('getAbsoluteLastScrollOffset()');
+    expect(feed).not.toContain('interactionGenerationRef');
+    expect(feed).not.toContain('settleAtOffset');
     expect(feed).toContain('removeClippedSubviews={false}');
-    expect(feed).not.toContain('useRecyclingState');
-    expect(feed).not.toContain('scheduleSettle');
-    expect(feed).not.toContain('pagingEnabled');
     expect(feed).not.toContain('onViewableItemsChanged');
-    expect(feed).toContain(
-      'visibilityQualified={Boolean(activeVideoPath) && playbackQualified}',
-    );
-    expect(paging).toContain('needsCorrection');
+    expect(feed).toContain('visibilityQualified={active && playbackEnabled}');
+    expect(paging).not.toContain('needsCorrection');
     expect(nativePlayer).toContain('Player.REPEAT_MODE_ONE');
-    expect(nativePlayer).toContain('AspectRatioFrameLayout.RESIZE_MODE_FILL');
-    expect(nativePlayer).toContain('centerCropScale(');
-    expect(nativePlayer).toContain('textureView.setTransform(matrix)');
+    expect(nativePlayer).toContain('AspectRatioFrameLayout.RESIZE_MODE_ZOOM');
+    expect(nativePlayer).not.toContain('centerCropScale(');
+    expect(nativePlayer).not.toContain('setTransform(');
     expect(nativePlayer).toContain('setKeepContentOnPlayerReset(false)');
     expect(nativePlayerLayout).toContain('app:surface_type="texture_view"');
-    expect(nativePlayerLayout).toContain('app:resize_mode="fill"');
+    expect(nativePlayerLayout).toContain('app:resize_mode="zoom"');
   });
 
   test('keeps the cover until first frame and manages the screen-awake lifecycle', () => {
@@ -169,10 +188,12 @@ describe('Doomscroller architecture', () => {
       'android/app/src/main/java/com/airplanemode/doomscroll/ReelPlayerViewManager.kt',
     );
 
-    expect(feed).toContain('renderedSourcePath === activeVideoPath');
+    expect(feed).toContain('renderedSourcePath === videoPath');
     expect(feed).toContain('onFirstFrame={event =>');
-    expect(feed).toContain('setRenderedSourcePath(event.nativeEvent.sourcePath)');
-    expect(feed).toContain('videoVisible && styles.reelVideoVisible');
+    expect(feed).toContain(
+      'setRenderedSourcePath(event.nativeEvent.sourcePath)',
+    );
+    expect(feed).toContain('!firstFrameVisible');
     expect(nativeContract).toContain('onFirstFrame?');
     expect(nativeContract).not.toContain('nextSourcePath');
     expect(nativePlayer).toContain('topFirstFrame');
@@ -184,20 +205,32 @@ describe('Doomscroller architecture', () => {
     expect(nativePlayer).not.toContain('warmNextFile');
   });
 
-  test('does not hide an already rendered Reel after a boundary swipe', () => {
+  test('does not issue a correction scroll when a gesture settles', () => {
     const feed = read('src/modules/doomscroller/OfflineReelsSurface.tsx');
     const settlement = feed.slice(
-      feed.indexOf('const settleAtOffset'),
-      feed.indexOf('const cancelDragEndSettle'),
-    );
-    const dragStart = feed.slice(
+      feed.indexOf('const finishScroll'),
       feed.indexOf('const beginScroll'),
-      feed.indexOf('const handleSurfaceLayout'),
     );
 
-    expect(settlement).toContain('if (page.index !== activeIndexRef.current)');
-    expect(settlement).toContain('setRenderedSourcePath(null)');
-    expect(dragStart).not.toContain('setRenderedSourcePath(null)');
+    expect(settlement).toContain('settledReelIndex');
+    expect(settlement).not.toContain('scrollToIndex');
+    expect(settlement).not.toContain('scrollToOffset');
+    expect(feed).not.toContain('DRAG_END_SETTLE_MS');
+  });
+
+  test('pauses Media Player audio before capture or Reel playback takes ownership', () => {
+    const capture = read('src/modules/doomscroller/DoomscrollerModule.tsx');
+    const feed = read('src/modules/doomscroller/OfflineReelsSurface.tsx');
+    const contract = read('src/native/MediaEngine.ts');
+    const module = read(
+      'android/app/src/main/java/com/airplanemode/media/MediaEngineModule.kt',
+    );
+
+    expect(capture).toContain('pauseMediaPlayback()');
+    expect(feed).toContain('pauseMediaPlayback()');
+    expect(feed).toContain('playbackOwnershipReady');
+    expect(contract).toContain('pausePlayback(): Promise<boolean>');
+    expect(module).toContain('fun pausePlayback(promise: Promise)');
   });
 
   test('uses a gradient, explicit pause, and copy-link action without a tap-to-pause layer', () => {
@@ -247,10 +280,27 @@ describe('Doomscroller architecture', () => {
     const repository = read(
       'android/app/src/main/java/com/airplanemode/doomscroll/data/DoomscrollRepository.kt',
     );
+    const queue = read(
+      'android/app/src/main/java/com/airplanemode/doomscroll/DoomscrollDownloadQueue.kt',
+    );
+    const mediaQueue = read(
+      'android/app/src/main/java/com/airplanemode/media/YtDlpQueue.kt',
+    );
+    const mediaModule = read(
+      'android/app/src/main/java/com/airplanemode/media/MediaEngineModule.kt',
+    );
 
     expect(worker).toContain('Semaphore(2, true)');
     expect(worker).toContain('Result.retry()');
     expect(repository).toContain('FREE_SPACE_RESERVE_BYTES = 1L shl 30');
-    expect(repository).toContain('videoCandidatesJson = if (filesReady) "[]" else usableVideoJson');
+    expect(repository).toContain(
+      'videoCandidatesJson = if (filesReady) "[]" else usableVideoJson',
+    );
+    expect(repository).toContain('fun refreshDownloadQueuePolicy()');
+    expect(queue).not.toContain('NetworkType.CONNECTED');
+    expect(queue).not.toContain('setRequiredNetworkType');
+    expect(mediaQueue).not.toContain('NetworkType.CONNECTED');
+    expect(mediaQueue).not.toContain('setRequiredNetworkType');
+    expect(mediaModule).toContain('replace = replaceConstrainedJobs');
   });
 });

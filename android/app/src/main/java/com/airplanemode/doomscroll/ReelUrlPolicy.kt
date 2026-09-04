@@ -6,20 +6,12 @@ import org.json.JSONObject
 import java.net.URI
 
 object ReelUrlPolicy {
-  private val allowedDomains = listOf(
-    "cdninstagram.com",
-    "fbcdn.net",
-    "fbsbx.com",
-  )
-
   fun isAllowedHttpsUrl(value: String?): Boolean {
     if (value.isNullOrBlank()) return false
     return try {
       val uri = URI(value)
-      val host = uri.host?.lowercase() ?: return false
-      uri.scheme.equals("https", ignoreCase = true) && allowedDomains.any { domain ->
-        host == domain || host.endsWith(".$domain")
-      }
+      val host = uri.host ?: return false
+      uri.scheme.equals("https", ignoreCase = true) && host.isNotBlank()
     } catch (_: Exception) {
       false
     }

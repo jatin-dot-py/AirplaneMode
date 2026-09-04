@@ -2,9 +2,7 @@ package com.airplanemode.media
 
 import android.content.Context
 import androidx.work.BackoffPolicy
-import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
@@ -18,11 +16,6 @@ object YtDlpQueue {
   fun enqueue(context: Context, mediaItemId: String, replace: Boolean = false): UUID {
     val request = OneTimeWorkRequestBuilder<YtDlpDownloadWorker>()
       .setInputData(workDataOf(INPUT_MEDIA_ITEM_ID to mediaItemId))
-      .setConstraints(
-        Constraints.Builder()
-          .setRequiredNetworkType(NetworkType.CONNECTED)
-          .build(),
-      )
       .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
       .addTag(TAG_QUEUE)
       .addTag(tagFor(mediaItemId))
